@@ -1,73 +1,105 @@
 using System;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
 namespace ArbitraryPictureFormat {
 	class Program {
-		static void Main(string[] args) {
-			string InputDir = "data/png";
-			string OutputDir = "data/apf";
+		static int Main(string[] args) {
+			Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-			if (Debugger.IsAttached) {
-				Directory.CreateDirectory(OutputDir);
-
-				string[] Files = Directory.GetFiles(InputDir, "*.png");
-
-				for (int i = 0; i < Files.Length; i++) {
-					string Name = Path.GetFileNameWithoutExtension(Files[i]);
-					Console.WriteLine("Testing {0}", Name);
-
-					Image Test = Image.FromFile(Files[i]);
-
-					string ApfPath = Path.Combine(OutputDir, Name + ".apf");
-					ArbitraryPicture APF = new ArbitraryPicture(Test);
-					APF.Save(ApfPath);
-
-					// Save a raw BMP for size comparison
-					using (Bitmap bmp = new Bitmap(Test))
-						bmp.Save(Path.Combine(OutputDir, Name + ".bmp"), ImageFormat.Bmp);
-
-					APF = ArbitraryPicture.FromFile(ApfPath);
-					APF.ToStencilBitmap().Save(Path.Combine(OutputDir, Name + "_stencil.png"));
-					APF.ToBitmap().Save(Path.Combine(OutputDir, Name + "_out.png"));
-				}
-				Console.WriteLine("Done!");
-				return;
+			if (args.Length == 0 || args[0] == "--help" || args[0] == "-h") {
+				PrintUsage();
+				return args.Length == 0 ? 1 : 0;
 			}
 
-			string Ext = Path.GetExtension(args[0]).ToLower();
-			string FName = Path.GetFileNameWithoutExtension(args[0]);
-			Directory.CreateDirectory(OutputDir);
-
-			if (Ext != ".apf") {
-				Console.WriteLine("Loading image");
-				Image Img = Image.FromFile(args[0]);
-
-				Console.WriteLine("Converting to .apf");
-				ArbitraryPicture APF = new ArbitraryPicture(Img);
-
-				string OutPath = Path.Combine(OutputDir, FName + ".apf");
-				Console.WriteLine("Writing to {0}", OutPath);
-				APF.Save(OutPath);
-			} else {
-				ArbitraryPicture APF;
-
-				Console.WriteLine("Loading .apf");
-				using (FileStream FS = File.OpenRead(args[0]))
-					APF = new ArbitraryPicture(FS);
-
-				if (args.Length == 2 && (args[1] == "--stencil" || args[1] == "-s")) {
-					string StencilPath = Path.Combine(OutputDir, FName + "_stencil.png");
-					Console.WriteLine("Writing {0}", StencilPath);
-					APF.ToStencilBitmap().Save(StencilPath);
-				}
-
-				string PngPath = Path.Combine(OutputDir, FName + ".png");
-				Console.WriteLine("Writing {0}", PngPath);
-				APF.ToBitmap().Save(PngPath);
+			string input = args[0];
+			if (!File.Exists(input)) {
+				Console.Error.WriteLine("Error: file not found: {0}", input);
+				return 1;
 			}
+
+			string ext = Path.GetExtension(input).ToLowerInvariant();
+			string dir = Path.GetDirectoryName(Path.GetFullPath(input));
+			string name = Path.GetFileNameWithoutExtension(input);
+
+			bool stencil = false;
+			string output = null;
+
+			for (int i = 1; i < args.Length; i++) {
+				if (args[i] == "--stencil" || args[i] == "-s")
+					stencil = true;
+				else if ((args[i] == "--output" || args[i] == "-o") && i + 1 < args.Length)
+					output = args[++i];
+				else {
+					Console.Error.WriteLine("Unknown option: {0}", args[i]);
+					return 1;
+				}
+			}
+
+			try {
+				if (ext == ".apf") {
+					output ??= Path.Combine(dir, name + ".png");
+					DecodeApf(input, output, stencil);
+				} else {
+					output ??= Path.Combine(dir, name + ".apf");
+					EncodeApf(input, output);
+				}
+			} catch (Exception ex) {
+				Console.Error.WriteLine("Error: {0}", ex.Message);
+				return 1;
+			}
+
+			return 0;
+		}
+
+		static void EncodeApf(string input, string output) {
+			Console.WriteLine("  {0}", input);
+			Image img = Image.FromFile(input);
+			ArbitraryPicture apf = new ArbitraryPicture(img);
+			apf.Save(output);
+
+			long inSize = new FileInfo(input).Length;
+			long outSize = new FileInfo(output).Length;
+			double ratio = (double)outSize / inSize;
+			Console.WriteLine("→ {0}  ({1:N0} → {2:N0} bytes, {3:F2}×)", output, inSize, outSize, ratio);
+		}
+
+		static void DecodeApf(string input, string output, bool stencil) {
+			Console.WriteLine("  {0}", input);
+			ArbitraryPicture apf = ArbitraryPicture.FromFile(input);
+
+			using (Bitmap bmp = apf.ToBitmap())
+				bmp.Save(output, ImageFormat.Png);
+			Console.WriteLine("→ {0}", output);
+
+			if (stencil) {
+				string stencilPath = Path.Combine(
+					Path.GetDirectoryName(output),
+					Path.GetFileNameWithoutExtension(output) + "_stencil.png");
+				using (Bitmap sbmp = apf.ToStencilBitmap())
+					sbmp.Save(stencilPath, ImageFormat.Png);
+				Console.WriteLine("→ {0}  (stencil)", stencilPath);
+			}
+		}
+
+		static void PrintUsage() {
+			Console.WriteLine("apf - Arbitrary Picture Format converter");
+			Console.WriteLine();
+			Console.WriteLine("Usage:");
+			Console.WriteLine("  apf <image.png>              Encode PNG/BMP/etc to APF");
+			Console.WriteLine("  apf <image.apf>              Decode APF to PNG");
+			Console.WriteLine();
+			Console.WriteLine("Options:");
+			Console.WriteLine("  -o, --output <path>          Set output file path");
+			Console.WriteLine("  -s, --stencil                Also export stencil mask (decode only)");
+			Console.WriteLine("  -h, --help                   Show this help");
+			Console.WriteLine();
+			Console.WriteLine("Examples:");
+			Console.WriteLine("  apf photo.png                → photo.apf");
+			Console.WriteLine("  apf sprite.apf               → sprite.png");
+			Console.WriteLine("  apf icon.apf -s              → icon.png + icon_stencil.png");
+			Console.WriteLine("  apf logo.png -o out/logo.apf → out/logo.apf");
 		}
 	}
 }

@@ -10,7 +10,7 @@ using System.Text;
 
 namespace ArbitraryPictureFormat
 {
-	enum PixelEncoding : byte
+	public enum PixelEncoding : byte
 	{
 		ChannelPlanes = 0,
 		PaletteIndexed = 1,
@@ -20,7 +20,7 @@ namespace ArbitraryPictureFormat
 		PaethFullGrid = 5,
 	}
 
-	class ArbitraryPicture
+	public class ArbitraryPicture
 	{
 		public Color Background;
 		public ShapeDesc Descriptor;
@@ -103,6 +103,52 @@ namespace ArbitraryPictureFormat
 			Deserialize(S);
 		}
 
+		public ArbitraryPicture(int width, int height, Color[] pixels)
+		{
+			if (pixels.Length != width * height)
+				throw new ArgumentException("pixels array length must equal width * height");
+
+			Descriptor = new ShapeDesc(width, height);
+
+			// Find most common color to use as background
+			Dictionary<int, int> colorCounts = new Dictionary<int, int>();
+			for (int i = 0; i < pixels.Length; i++)
+			{
+				int argb = pixels[i].ToArgb();
+				if (colorCounts.ContainsKey(argb))
+					colorCounts[argb]++;
+				else
+					colorCounts[argb] = 1;
+			}
+
+			int bestArgb = 0;
+			int bestCount = 0;
+			foreach (var kvp in colorCounts)
+			{
+				if (kvp.Value > bestCount)
+				{
+					bestCount = kvp.Value;
+					bestArgb = kvp.Key;
+				}
+			}
+			Background = Color.FromArgb(bestArgb);
+
+			for (int y = 0; y < height; y++)
+				for (int x = 0; x < width; x++)
+				{
+					Color c = pixels[y * width + x];
+					Descriptor.Set(x, y, c != Background);
+				}
+
+			ImageData = new Color[Descriptor.GetCount()];
+
+			int idx = 0;
+			for (int y = 0; y < height; y++)
+				for (int x = 0; x < width; x++)
+					if (Descriptor.Get(x, y))
+						ImageData[idx++] = pixels[y * width + x];
+		}
+
 		public Bitmap ToStencilBitmap()
 		{
 			Bitmap Bmp = new Bitmap(Descriptor.Width, Descriptor.Height);
@@ -172,7 +218,9 @@ namespace ArbitraryPictureFormat
 			return true;
 		}
 
-		public void Serialize(Stream S)
+		public void Serialize(Stream S) => Serialize(S, null);
+
+		public void Serialize(Stream S, PixelEncoding? forcedEncoding)
 		{
 			using (BinaryWriter Writer = new BinaryWriter(S, Encoding.UTF8, true))
 			{
@@ -186,22 +234,86 @@ namespace ArbitraryPictureFormat
 
 				var candidates = new List<(PixelEncoding mode, byte[] data)>();
 
-				candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+				if (forcedEncoding == null)
+				{
+					candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
 
-				if (ImageData.Length == 0 || IsSolidFill())
-					candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
+					if (ImageData.Length == 0 || IsSolidFill())
+						candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
 
-				var uniqueArgbs = GetUniqueArgbSet();
-				if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
-					candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
+					var uniqueArgbs = GetUniqueArgbSet();
+					if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
+						candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
 
-				if (IsMonochrome())
-					candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
+					if (IsMonochrome())
+						candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
 
-				if (ImageData.Length > 0)
-					candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
+					if (ImageData.Length > 0)
+						candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
 
-				candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+					candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+				}
+				else
+				{
+					// Try the forced encoding; fall back to auto-select if not applicable
+					bool added = false;
+					switch (forcedEncoding.Value)
+					{
+						case PixelEncoding.ChannelPlanes:
+							candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+							added = true;
+							break;
+						case PixelEncoding.SolidFill:
+							if (ImageData.Length == 0 || IsSolidFill())
+							{
+								candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
+								added = true;
+							}
+							break;
+						case PixelEncoding.PaletteIndexed:
+							var ua = GetUniqueArgbSet();
+							if (ua.Count <= 256 && ua.Count > 0)
+							{
+								candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, ua)));
+								added = true;
+							}
+							break;
+						case PixelEncoding.MonoAlpha:
+							if (IsMonochrome())
+							{
+								candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
+								added = true;
+							}
+							break;
+						case PixelEncoding.ColorSorted:
+							if (ImageData.Length > 0)
+							{
+								candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
+								added = true;
+							}
+							break;
+						case PixelEncoding.PaethFullGrid:
+							candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+							added = true;
+							break;
+					}
+
+					if (!added)
+					{
+						// Forced encoding not applicable, fall back to auto
+						candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+						if (ImageData.Length == 0 || IsSolidFill())
+							candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
+						var uniqueArgbs = GetUniqueArgbSet();
+						if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
+							candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
+						if (IsMonochrome())
+							candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
+						if (ImageData.Length > 0)
+							candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
+						candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+					}
+				}
 
 				PixelEncoding bestMode = candidates[0].mode;
 				byte[] bestData = candidates[0].data;
@@ -748,7 +860,7 @@ namespace ArbitraryPictureFormat
 		}
 	}
 
-	struct ShapeDesc
+	public struct ShapeDesc
 	{
 		public int Width, Height;
 		public BitArray Data;
@@ -857,7 +969,7 @@ namespace ArbitraryPictureFormat
 		}
 	}
 
-	static class Helpers
+	public static class Helpers
 	{
 		public static byte[] ToByteArray(this BitArray BA)
 		{

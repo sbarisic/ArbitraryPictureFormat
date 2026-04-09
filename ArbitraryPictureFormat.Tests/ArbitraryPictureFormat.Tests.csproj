@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ArbitraryPictureFormat\ArbitraryPictureFormat.csproj" />
+    <ProjectReference Include="..\ArbitraryPictureFormat.Core\ArbitraryPictureFormat.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
