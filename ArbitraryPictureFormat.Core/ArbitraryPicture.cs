@@ -225,110 +225,115 @@ namespace ArbitraryPictureFormat
 			using (BinaryWriter Writer = new BinaryWriter(S, Encoding.UTF8, true))
 			{
 				Writer.Write(FORMAT_VERSION);
-				Descriptor.Serialize(Writer);
-				Writer.Write(Background.ToArgb());
-				Writer.Write(ImageData.Length);
+				SerializePayload(Writer, forcedEncoding);
+			}
+		}
 
-				int[] zOrder = Helpers.GenerateZOrderIndices(Descriptor.Width, Descriptor.Height);
-				Color[] zPixels = ReorderPixelsToZOrder(zOrder);
+		public void SerializePayload(BinaryWriter Writer, PixelEncoding? forcedEncoding)
+		{
+			Descriptor.Serialize(Writer);
+			Writer.Write(Background.ToArgb());
+			Writer.Write(ImageData.Length);
 
-				var candidates = new List<(PixelEncoding mode, byte[] data)>();
+			int[] zOrder = Helpers.GenerateZOrderIndices(Descriptor.Width, Descriptor.Height);
+			Color[] zPixels = ReorderPixelsToZOrder(zOrder);
 
-				if (forcedEncoding == null)
+			var candidates = new List<(PixelEncoding mode, byte[] data)>();
+
+			if (forcedEncoding == null)
+			{
+				candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+
+				if (ImageData.Length == 0 || IsSolidFill())
+					candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
+
+				var uniqueArgbs = GetUniqueArgbSet();
+				if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
+					candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
+
+				if (IsMonochrome())
+					candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
+
+				if (ImageData.Length > 0)
+					candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
+
+				candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+			}
+			else
+			{
+				// Try the forced encoding; fall back to auto-select if not applicable
+				bool added = false;
+				switch (forcedEncoding.Value)
 				{
-					candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+					case PixelEncoding.ChannelPlanes:
+						candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+						added = true;
+						break;
+					case PixelEncoding.SolidFill:
+						if (ImageData.Length == 0 || IsSolidFill())
+						{
+							candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
+							added = true;
+						}
+						break;
+					case PixelEncoding.PaletteIndexed:
+						var ua = GetUniqueArgbSet();
+						if (ua.Count <= 256 && ua.Count > 0)
+						{
+							candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, ua)));
+							added = true;
+						}
+						break;
+					case PixelEncoding.MonoAlpha:
+						if (IsMonochrome())
+						{
+							candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
+							added = true;
+						}
+						break;
+					case PixelEncoding.ColorSorted:
+						if (ImageData.Length > 0)
+						{
+							candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
+							added = true;
+						}
+						break;
+					case PixelEncoding.PaethFullGrid:
+						candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+						added = true;
+						break;
+				}
 
+				if (!added)
+				{
+					// Forced encoding not applicable, fall back to auto
+					candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
 					if (ImageData.Length == 0 || IsSolidFill())
 						candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
-
 					var uniqueArgbs = GetUniqueArgbSet();
 					if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
 						candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
-
 					if (IsMonochrome())
 						candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
-
 					if (ImageData.Length > 0)
 						candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
-
 					candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
 				}
-				else
-				{
-					// Try the forced encoding; fall back to auto-select if not applicable
-					bool added = false;
-					switch (forcedEncoding.Value)
-					{
-						case PixelEncoding.ChannelPlanes:
-							candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
-							added = true;
-							break;
-						case PixelEncoding.SolidFill:
-							if (ImageData.Length == 0 || IsSolidFill())
-							{
-								candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
-								added = true;
-							}
-							break;
-						case PixelEncoding.PaletteIndexed:
-							var ua = GetUniqueArgbSet();
-							if (ua.Count <= 256 && ua.Count > 0)
-							{
-								candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, ua)));
-								added = true;
-							}
-							break;
-						case PixelEncoding.MonoAlpha:
-							if (IsMonochrome())
-							{
-								candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
-								added = true;
-							}
-							break;
-						case PixelEncoding.ColorSorted:
-							if (ImageData.Length > 0)
-							{
-								candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
-								added = true;
-							}
-							break;
-						case PixelEncoding.PaethFullGrid:
-							candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
-							added = true;
-							break;
-					}
-
-					if (!added)
-					{
-						// Forced encoding not applicable, fall back to auto
-						candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
-						if (ImageData.Length == 0 || IsSolidFill())
-							candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
-						var uniqueArgbs = GetUniqueArgbSet();
-						if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
-							candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
-						if (IsMonochrome())
-							candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
-						if (ImageData.Length > 0)
-							candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
-						candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
-					}
-				}
-
-				PixelEncoding bestMode = candidates[0].mode;
-				byte[] bestData = candidates[0].data;
-				for (int i = 1; i < candidates.Count; i++)
-				{
-					if (candidates[i].data.Length < bestData.Length)
-					{
-						bestMode = candidates[i].mode;
-						bestData = candidates[i].data;
-					}
-				}
-
-				Writer.Write((byte)bestMode);
-				Writer.Write(bestData);
 			}
+
+			PixelEncoding bestMode = candidates[0].mode;
+			byte[] bestData = candidates[0].data;
+			for (int i = 1; i < candidates.Count; i++)
+			{
+				if (candidates[i].data.Length < bestData.Length)
+				{
+					bestMode = candidates[i].mode;
+					bestData = candidates[i].data;
+				}
+			}
+
+			Writer.Write((byte)bestMode);
+			Writer.Write(bestData);
 		}
 
 		Color[] ReorderPixelsToZOrder(int[] zOrder)
@@ -669,21 +674,26 @@ namespace ArbitraryPictureFormat
 				if (version != FORMAT_VERSION)
 					throw new InvalidDataException("Unknown APF format version: 0x" + version.ToString("X2"));
 
-				Descriptor = ShapeDesc.FromStream(Reader);
-				Background = Color.FromArgb(Reader.ReadInt32());
-				int pixelCount = Reader.ReadInt32();
-				PixelEncoding mode = (PixelEncoding)Reader.ReadByte();
+				DeserializePayload(Reader);
+			}
+		}
 
-				switch (mode)
-				{
-					case PixelEncoding.ChannelPlanes: DecodeChannelPlanes(Reader, pixelCount); break;
-					case PixelEncoding.PaletteIndexed: DecodePaletteIndexed(Reader, pixelCount); break;
-					case PixelEncoding.ColorSorted: DecodeColorSorted(Reader, pixelCount); break;
-					case PixelEncoding.SolidFill: DecodeSolidFill(Reader, pixelCount); break;
-					case PixelEncoding.MonoAlpha: DecodeMonoAlpha(Reader, pixelCount); break;
-					case PixelEncoding.PaethFullGrid: DecodePaethFullGrid(Reader, pixelCount); break;
-					default: throw new InvalidDataException("Unknown pixel encoding mode: " + (int)mode);
-				}
+		public void DeserializePayload(BinaryReader Reader)
+		{
+			Descriptor = ShapeDesc.FromStream(Reader);
+			Background = Color.FromArgb(Reader.ReadInt32());
+			int pixelCount = Reader.ReadInt32();
+			PixelEncoding mode = (PixelEncoding)Reader.ReadByte();
+
+			switch (mode)
+			{
+				case PixelEncoding.ChannelPlanes: DecodeChannelPlanes(Reader, pixelCount); break;
+				case PixelEncoding.PaletteIndexed: DecodePaletteIndexed(Reader, pixelCount); break;
+				case PixelEncoding.ColorSorted: DecodeColorSorted(Reader, pixelCount); break;
+				case PixelEncoding.SolidFill: DecodeSolidFill(Reader, pixelCount); break;
+				case PixelEncoding.MonoAlpha: DecodeMonoAlpha(Reader, pixelCount); break;
+				case PixelEncoding.PaethFullGrid: DecodePaethFullGrid(Reader, pixelCount); break;
+				default: throw new InvalidDataException("Unknown pixel encoding mode: " + (int)mode);
 			}
 		}
 

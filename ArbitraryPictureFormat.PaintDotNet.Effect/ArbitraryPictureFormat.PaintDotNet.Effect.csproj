@@ -10,12 +10,8 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
-    <OutputPath>$(PdnRoot)\FileTypes\</OutputPath>
+    <OutputPath>$(PdnRoot)\Effects\</OutputPath>
   </PropertyGroup>
-
-  <ItemGroup>
-    <ProjectReference Include="..\ArbitraryPictureFormat.Core\ArbitraryPictureFormat.Core.csproj" />
-  </ItemGroup>
 
   <ItemGroup>
     <Reference Include="PaintDotNet.Base">
