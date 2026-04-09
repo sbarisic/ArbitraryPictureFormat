@@ -665,82 +665,78 @@ paeth_fail:
     return NULL;
 }
 
-/* ---------- Public API ---------- */
+/* ---------- String / metadata helpers ---------- */
 
-ApfImage *apf_load(const char *path) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return NULL;
+static char *read_string(Reader *r) {
+    int32_t len;
+    if (!read_i32(r, &len) || len < 0) return NULL;
+    char *s = (char *)malloc(len + 1);
+    if (!s) return NULL;
+    if (len > 0 && !read_bytes(r, (uint8_t *)s, len)) { free(s); return NULL; }
+    s[len] = '\0';
+    return s;
+}
 
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+static int read_metadata(Reader *r, ApfMetadata *meta) {
+    int32_t count;
+    if (!read_i32(r, &count) || count < 0) return 0;
+    meta->count = count;
+    if (count == 0) { meta->entries = NULL; return 1; }
 
-    uint8_t *file_data = (uint8_t *)malloc(file_size);
-    if (!file_data) { fclose(f); return NULL; }
-    if ((long)fread(file_data, 1, file_size, f) != file_size) {
-        free(file_data);
-        fclose(f);
-        return NULL;
+    meta->entries = (ApfMetadataEntry *)calloc(count, sizeof(ApfMetadataEntry));
+    if (!meta->entries) return 0;
+
+    for (int i = 0; i < count; i++) {
+        meta->entries[i].key = read_string(r);
+        meta->entries[i].value = read_string(r);
+        if (!meta->entries[i].key || !meta->entries[i].value) return 0;
     }
-    fclose(f);
+    return 1;
+}
 
-    Reader reader = { file_data, (size_t)file_size, 0 };
-
-    /* Version check */
-    uint8_t version;
-    if (!read_u8(&reader, &version) || version != 0x10) {
-        fprintf(stderr, "apf_load: unknown version 0x%02X\n", version);
-        free(file_data);
-        return NULL;
+static void free_metadata(ApfMetadata *meta) {
+    for (int i = 0; i < meta->count; i++) {
+        free(meta->entries[i].key);
+        free(meta->entries[i].value);
     }
+    free(meta->entries);
+    meta->entries = NULL;
+    meta->count = 0;
+}
 
-    /* Stencil (includes width/height) */
+/* ---------- Decode single-image payload (stencil + bg + pixels + mode) ---------- */
+
+static int decode_payload(Reader *r, ApfImage *img) {
     Stencil stencil = {0};
-    if (!decode_stencil(&reader, &stencil)) {
-        free(file_data);
-        return NULL;
-    }
+    if (!decode_stencil(r, &stencil)) return 0;
 
-    /* Background + pixel count + encoding mode */
     int32_t bg_argb, pixel_count;
     uint8_t mode;
-    if (!read_i32(&reader, &bg_argb) || !read_i32(&reader, &pixel_count) || !read_u8(&reader, &mode)) {
+    if (!read_i32(r, &bg_argb) || !read_i32(r, &pixel_count) || !read_u8(r, &mode)) {
         free(stencil.bits);
-        free(file_data);
-        return NULL;
+        return 0;
     }
     uint32_t bg_rgba = argb_to_rgba(bg_argb);
 
-    /* Decode pixel data based on mode */
     uint32_t *image_data = NULL;
     switch (mode) {
-        case 0: image_data = decode_channel_planes(&reader, pixel_count, &stencil); break;
-        case 1: image_data = decode_palette_indexed(&reader, pixel_count, &stencil); break;
-        case 2: image_data = decode_color_sorted(&reader, pixel_count); break;
-        case 3: image_data = decode_solid_fill(&reader, pixel_count); break;
-        case 4: image_data = decode_mono_alpha(&reader, pixel_count, &stencil); break;
-        case 5: image_data = decode_paeth_full_grid(&reader, pixel_count, &stencil); break;
+        case 0: image_data = decode_channel_planes(r, pixel_count, &stencil); break;
+        case 1: image_data = decode_palette_indexed(r, pixel_count, &stencil); break;
+        case 2: image_data = decode_color_sorted(r, pixel_count); break;
+        case 3: image_data = decode_solid_fill(r, pixel_count); break;
+        case 4: image_data = decode_mono_alpha(r, pixel_count, &stencil); break;
+        case 5: image_data = decode_paeth_full_grid(r, pixel_count, &stencil); break;
         default:
-            fprintf(stderr, "apf_load: unknown encoding mode %d\n", mode);
+            fprintf(stderr, "apf: unknown encoding mode %d\n", mode);
             break;
     }
 
-    free(file_data);
+    if (!image_data) { free(stencil.bits); return 0; }
 
-    if (!image_data) {
-        free(stencil.bits);
-        return NULL;
-    }
-
-    /* Compose final RGBA pixel buffer with background fill */
     int w = stencil.width, h = stencil.height;
     int total = w * h;
     uint32_t *pixels = (uint32_t *)malloc(total * sizeof(uint32_t));
-    if (!pixels) {
-        free(image_data);
-        free(stencil.bits);
-        return NULL;
-    }
+    if (!pixels) { free(image_data); free(stencil.bits); return 0; }
 
     int img_idx = 0;
     for (int i = 0; i < total; i++) {
@@ -753,17 +749,127 @@ ApfImage *apf_load(const char *path) {
     free(image_data);
     free(stencil.bits);
 
-    ApfImage *img = (ApfImage *)malloc(sizeof(ApfImage));
-    if (!img) { free(pixels); return NULL; }
     img->width = w;
     img->height = h;
     img->pixels = pixels;
-    return img;
+    return 1;
 }
 
-void apf_free(ApfImage *img) {
-    if (img) {
-        free(img->pixels);
-        free(img);
+/* ---------- Public API ---------- */
+
+static int strcasecmp_portable(const char *a, const char *b) {
+    while (*a && *b) {
+        char ca = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a;
+        char cb = *b >= 'A' && *b <= 'Z' ? *b + 32 : *b;
+        if (ca != cb) return ca - cb;
+        a++; b++;
     }
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
+ApfFile *apf_load_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    uint8_t *file_data = (uint8_t *)malloc(file_size);
+    if (!file_data) { fclose(f); return NULL; }
+    if ((long)fread(file_data, 1, file_size, f) != file_size) {
+        free(file_data); fclose(f); return NULL;
+    }
+    fclose(f);
+
+    Reader reader = { file_data, (size_t)file_size, 0 };
+
+    uint8_t version;
+    if (!read_u8(&reader, &version)) { free(file_data); return NULL; }
+
+    ApfFile *apf = (ApfFile *)calloc(1, sizeof(ApfFile));
+    if (!apf) { free(file_data); return NULL; }
+    apf->version = version;
+
+    switch (version) {
+        case 0x10: { /* v1.0: single image, no metadata */
+            apf->image_count = 1;
+            apf->images = (ApfImage *)calloc(1, sizeof(ApfImage));
+            if (!apf->images) goto fail;
+            apf->images[0].name = _strdup("");
+            if (!decode_payload(&reader, &apf->images[0])) goto fail;
+            break;
+        }
+
+        case 0x11: { /* v1.1: single image with metadata */
+            apf->image_count = 1;
+            apf->images = (ApfImage *)calloc(1, sizeof(ApfImage));
+            if (!apf->images) goto fail;
+            apf->images[0].name = _strdup("");
+            if (!read_metadata(&reader, &apf->images[0].metadata)) goto fail;
+            if (!decode_payload(&reader, &apf->images[0])) goto fail;
+            break;
+        }
+
+        case 0x20: { /* v2.0: multi-image container */
+            int32_t image_count;
+            if (!read_i32(&reader, &image_count) || image_count < 0) goto fail;
+
+            apf->image_count = image_count;
+            apf->images = (ApfImage *)calloc(image_count, sizeof(ApfImage));
+            if (!apf->images) goto fail;
+
+            for (int i = 0; i < image_count; i++) {
+                apf->images[i].name = read_string(&reader);
+                if (!apf->images[i].name) goto fail;
+
+                uint8_t sub_version;
+                if (!read_u8(&reader, &sub_version)) goto fail;
+
+                if (sub_version == 0x11) {
+                    if (!read_metadata(&reader, &apf->images[i].metadata)) goto fail;
+                } else if (sub_version != 0x10) {
+                    fprintf(stderr, "apf: unknown sub-version 0x%02X\n", sub_version);
+                    goto fail;
+                }
+
+                if (!decode_payload(&reader, &apf->images[i])) goto fail;
+            }
+            break;
+        }
+
+        default:
+            fprintf(stderr, "apf: unknown version 0x%02X\n", version);
+            goto fail;
+    }
+
+    free(file_data);
+    return apf;
+
+fail:
+    free(file_data);
+    apf_free_file(apf);
+    return NULL;
+}
+
+ApfImage *apf_file_get_image(ApfFile *file, const char *name) {
+    if (!file || file->image_count == 0) return NULL;
+    if (!name || name[0] == '\0') return &file->images[0];
+
+    for (int i = 0; i < file->image_count; i++) {
+        if (file->images[i].name && strcasecmp_portable(file->images[i].name, name) == 0)
+            return &file->images[i];
+    }
+    return &file->images[0];
+}
+
+void apf_free_file(ApfFile *file) {
+    if (!file) return;
+    for (int i = 0; i < file->image_count; i++) {
+        free(file->images[i].pixels);
+        free(file->images[i].name);
+        free_metadata(&file->images[i].metadata);
+    }
+    free(file->images);
+    free(file);
 }
