@@ -22,42 +22,41 @@ public class FileSizeTests {
 		return new FileInfo(apfPath).Length;
 	}
 
-	// Current baselines (v0x03) + ~3 KB headroom.
-	// When compression improves, lower these thresholds to lock in the gains.
+	// v1.0 baselines (LZ77 + Paeth + sub-byte palette) + ~2 KB headroom.
 
 	[Fact]
 	public void CircularImage_BelowSizeLimit() {
 		long size = EncodeAndGetSize("circular_image.png");
-		Assert.True(size <= 65_000,
-			$"circular_image.apf is {size} bytes, expected <= 65000");
+		Assert.True(size <= 18_000,
+			$"circular_image.apf is {size} bytes, expected <= 18000");
 	}
 
 	[Fact]
 	public void Cow_BelowSizeLimit() {
 		long size = EncodeAndGetSize("cow.png");
-		Assert.True(size <= 748_000,
-			$"cow.apf is {size} bytes, expected <= 748000");
+		Assert.True(size <= 688_000,
+			$"cow.apf is {size} bytes, expected <= 688000");
 	}
 
 	[Fact]
 	public void RotatedCow_BelowSizeLimit() {
 		long size = EncodeAndGetSize("rotated_cow.png");
-		Assert.True(size <= 350_000,
-			$"rotated_cow.apf is {size} bytes, expected <= 350000");
+		Assert.True(size <= 340_000,
+			$"rotated_cow.apf is {size} bytes, expected <= 340000");
 	}
 
 	[Fact]
 	public void Sample_BelowSizeLimit() {
 		long size = EncodeAndGetSize("sample.png");
-		Assert.True(size <= 25_000,
-			$"sample.apf is {size} bytes, expected <= 25000");
+		Assert.True(size <= 24_000,
+			$"sample.apf is {size} bytes, expected <= 24000");
 	}
 
 	[Fact]
 	public void Terminal_BelowSizeLimit() {
 		long size = EncodeAndGetSize("terminal.png");
-		Assert.True(size <= 96_500,
-			$"terminal.apf is {size} bytes, expected <= 96500");
+		Assert.True(size <= 45_000,
+			$"terminal.apf is {size} bytes, expected <= 45000");
 	}
 
 	[Fact]
