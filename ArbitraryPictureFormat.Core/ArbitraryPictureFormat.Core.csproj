@@ -1,13 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0-windows</TargetFramework>
+    <TargetFrameworks>net9.0;net9.0-windows</TargetFrameworks>
     <RootNamespace>ArbitraryPictureFormat</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- NuGet package metadata -->
     <PackageId>ArbitraryPictureFormat</PackageId>
-    <Version>2.0.0</Version>
+    <Version>2.0.1</Version>
     <Authors>sbarisic</Authors>
     <Description>APF (Arbitrary Picture Format) — a lossless image format with 6 encoding strategies, multi-image support, per-image metadata, and a microcontroller-friendly decoder. Encode and decode APF v1.0/v1.1/v2.0 files.</Description>
     <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
@@ -18,7 +18,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net9.0-windows'">
     <PackageReference Include="System.Drawing.Common" Version="9.0.*" />
   </ItemGroup>
 

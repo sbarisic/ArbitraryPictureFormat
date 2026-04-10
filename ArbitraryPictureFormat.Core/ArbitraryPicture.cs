@@ -2,7 +2,9 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
+#if WINDOWS7_0_OR_GREATER
 using System.Drawing.Imaging;
+#endif
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -39,6 +41,7 @@ namespace ArbitraryPictureFormat
 			ImageData = new Color[Descriptor.GetCount()];
 		}
 
+#if WINDOWS7_0_OR_GREATER
 		public ArbitraryPicture(Image Img)
 		{
 			Descriptor = new ShapeDesc(Img.Width, Img.Height);
@@ -97,6 +100,7 @@ namespace ArbitraryPictureFormat
 				Bmp.UnlockBits(BmpData);
 			}
 		}
+#endif
 
 		public ArbitraryPicture(Stream S)
 		{
@@ -149,6 +153,7 @@ namespace ArbitraryPictureFormat
 						ImageData[idx++] = pixels[y * width + x];
 		}
 
+#if WINDOWS7_0_OR_GREATER
 		public Bitmap ToStencilBitmap()
 		{
 			Bitmap Bmp = new Bitmap(Descriptor.Width, Descriptor.Height);
@@ -182,6 +187,7 @@ namespace ArbitraryPictureFormat
 		{
 			return ToBitmap(Color.Transparent);
 		}
+#endif
 
 		public void Save(string FilePath)
 		{
@@ -1002,6 +1008,7 @@ namespace ArbitraryPictureFormat
 			return true;
 		}
 
+#if WINDOWS7_0_OR_GREATER
 		public static BitmapData LockBits(this Bitmap Bmp)
 		{
 			return Bmp.LockBits(new Rectangle(0, 0, Bmp.Width, Bmp.Height), ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
@@ -1021,6 +1028,7 @@ namespace ArbitraryPictureFormat
 		{
 			Marshal.WriteInt32(Data.Scan0, Y * Data.Stride + X * 4, Clr.ToArgb());
 		}
+#endif
 
 		// --- RLE ---
 
