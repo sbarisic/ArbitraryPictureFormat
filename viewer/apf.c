@@ -665,6 +665,122 @@ paeth_fail:
     return NULL;
 }
 
+/* ---------- Decode Mode 6: PaethChannelPlanes ---------- */
+
+/* Decompress stencil-true residuals, then Paeth-decode using background at stencil-false positions */
+static uint8_t *read_paeth_channel_plane(Reader *r, int w, int h, int pixel_count,
+                                          uint8_t bg_val, const Stencil *stencil) {
+    uint8_t *stencil_residuals = read_compressed(r, pixel_count);
+    if (!stencil_residuals) return NULL;
+
+    int total = w * h;
+    uint8_t *result = (uint8_t *)malloc(total);
+    if (!result) { free(stencil_residuals); return NULL; }
+
+    int si = 0;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            int i = y * w + x;
+            uint8_t a = x > 0 ? result[i-1] : 0;
+            uint8_t b = y > 0 ? result[i-w] : 0;
+            uint8_t c = (x > 0 && y > 0) ? result[i-w-1] : 0;
+            uint8_t predicted = paeth_predict(a, b, c);
+
+            if (stencil_get(stencil, x, y))
+                result[i] = (uint8_t)(stencil_residuals[si++] + predicted);
+            else
+                result[i] = bg_val;
+        }
+    }
+
+    free(stencil_residuals);
+    return result;
+}
+
+static uint32_t *decode_paeth_channel_planes(Reader *r, int pixel_count, Stencil *stencil,
+                                              int32_t bg_argb) {
+    int w = stencil->width, h = stencil->height;
+
+    uint8_t bg_r = (uint8_t)((bg_argb >> 16) & 0xFF);
+    uint8_t bg_g = (uint8_t)((bg_argb >> 8) & 0xFF);
+    uint8_t bg_b = (uint8_t)(bg_argb & 0xFF);
+    uint8_t bg_a = (uint8_t)((bg_argb >> 24) & 0xFF);
+
+    uint8_t channel_flags;
+    if (!read_u8(r, &channel_flags)) return NULL;
+    int has_r = channel_flags & 1;
+    int has_g = channel_flags & 2;
+    int has_b = channel_flags & 4;
+    int has_a = channel_flags & 8;
+    int is_mono = channel_flags & 16;
+
+    uint8_t *r_plane, *g_plane, *b_plane, *a_plane;
+    uint8_t val;
+
+    if (has_r)
+        r_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_r, stencil);
+    else {
+        if (!read_u8(r, &val)) return NULL;
+        r_plane = fill_plane(w * h, val);
+    }
+    if (!r_plane) return NULL;
+
+    if (is_mono) {
+        g_plane = r_plane;
+        b_plane = r_plane;
+    } else {
+        if (has_g)
+            g_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_g, stencil);
+        else {
+            if (!read_u8(r, &val)) { free(r_plane); return NULL; }
+            g_plane = fill_plane(w * h, val);
+        }
+        if (has_b)
+            b_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_b, stencil);
+        else {
+            if (!read_u8(r, &val)) { free(r_plane); free(g_plane); return NULL; }
+            b_plane = fill_plane(w * h, val);
+        }
+    }
+
+    if (has_a)
+        a_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_a, stencil);
+    else {
+        if (!read_u8(r, &val)) goto pcp_fail;
+        a_plane = fill_plane(w * h, val);
+    }
+    if (!a_plane) goto pcp_fail;
+
+    {
+        uint32_t *image_data = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
+        if (!image_data) goto pcp_fail;
+
+        int idx = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (stencil_get(stencil, x, y)) {
+                    int i = y * w + x;
+                    image_data[idx++] = (uint32_t)r_plane[i]
+                                      | ((uint32_t)g_plane[i] << 8)
+                                      | ((uint32_t)b_plane[i] << 16)
+                                      | ((uint32_t)a_plane[i] << 24);
+                }
+            }
+        }
+
+        if (!is_mono) { free(g_plane); free(b_plane); }
+        free(r_plane);
+        free(a_plane);
+        return image_data;
+    }
+
+pcp_fail:
+    if (!is_mono) { free(g_plane); free(b_plane); }
+    free(r_plane);
+    free(a_plane);
+    return NULL;
+}
+
 /* ---------- String / metadata helpers ---------- */
 
 static char *read_string(Reader *r) {
@@ -726,6 +842,7 @@ static int decode_payload(Reader *r, ApfImage *img) {
         case 3: image_data = decode_solid_fill(r, pixel_count); break;
         case 4: image_data = decode_mono_alpha(r, pixel_count, &stencil); break;
         case 5: image_data = decode_paeth_full_grid(r, pixel_count, &stencil); break;
+        case 6: image_data = decode_paeth_channel_planes(r, pixel_count, &stencil, bg_argb); break;
         default:
             fprintf(stderr, "apf: unknown encoding mode %d\n", mode);
             break;

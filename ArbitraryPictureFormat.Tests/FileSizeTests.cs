@@ -34,15 +34,15 @@ public class FileSizeTests {
 	[Fact]
 	public void Cow_BelowSizeLimit() {
 		long size = EncodeAndGetSize("cow.png");
-		Assert.True(size <= 688_000,
-			$"cow.apf is {size} bytes, expected <= 688000");
+		Assert.True(size <= 686_000,
+			$"cow.apf is {size} bytes, expected <= 686000");
 	}
 
 	[Fact]
 	public void RotatedCow_BelowSizeLimit() {
 		long size = EncodeAndGetSize("rotated_cow.png");
-		Assert.True(size <= 340_000,
-			$"rotated_cow.apf is {size} bytes, expected <= 340000");
+		Assert.True(size <= 320_000,
+			$"rotated_cow.apf is {size} bytes, expected <= 320000");
 	}
 
 	[Fact]

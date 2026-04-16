@@ -15,7 +15,7 @@ that a microcontroller can decode without breaking a sweat.
 ## What is this?
 
 APF is a custom lossless image format built from scratch. The encoder is written in
-C#/.NET 9 and is deliberately *slow and clever* -- it tries **six different encoding
+C#/.NET 9 and is deliberately *slow and clever* -- it tries **seven different encoding
 strategies** and picks whichever produces the smallest file. The decoder is written in
 pure C99 (~875 lines, zero dependencies) and is designed to be fast, simple, and
 embeddable on resource-constrained hardware.
@@ -25,7 +25,7 @@ embeddable on resource-constrained hardware.
 ## Features
 
 - **Lossless** -- bit-perfect round-trip, every pixel preserved
-- **6 encoding modes** -- the encoder races all strategies and keeps the winner
+- **7 encoding modes** -- the encoder races all strategies and keeps the winner
 - **Dual compression** -- RLE and LZ77, auto-selected per data stream
 - **Z-order curves** -- Morton-code pixel reordering for better spatial locality
 - **Arbitrary shapes** -- stencil mask supports non-rectangular image regions
@@ -49,6 +49,7 @@ The encoder evaluates all applicable strategies and serializes the smallest:
 | `3` | **Solid Fill** | Single-color images -- just 4 bytes |
 | `4` | **Mono+Alpha** | Grayscale with transparency -- single luma channel + alpha |
 | `5` | **Paeth Full Grid** | Screenshots, UI -- PNG-style Paeth prediction on raw grid |
+| `6` | **Paeth Channel Planes** | Non-rectangular images -- 2D Paeth prediction, stores only non-background residuals |
 
 Each mode applies its own transform pipeline, then compresses through the shared
 **RLE / LZ77** layer (whichever produces fewer bytes wins).
@@ -81,7 +82,7 @@ Offset  Size     Field
 0x01    4+4+N    Shape descriptor (width, height, stencil)
  ...    4        Background color (ARGB)
  ...    4        Pixel count
- ...    1        Encoding mode (0-5)
+ ...    1        Encoding mode (0-6)
  ...    N        Mode-specific payload
 ```
 
@@ -228,8 +229,8 @@ The companion effect plugin (`ArbitraryPictureFormat.PaintDotNet.Effect`) adds a
 | circular_image | 24,747 | 15,240 | 921,654 | **0.62x** |
 | terminal | 43,977 | 42,645 | 3,686,454 | **0.97x** |
 | sample | 22,249 | 21,461 | 921,654 | **0.96x** |
-| cow | 420,205 | 685,088 | 2,764,854 | 1.63x |
-| rotated_cow | 232,231 | 337,827 | 1,382,454 | 1.45x |
+| cow | 420,205 | 684,985 | 2,764,854 | 1.63x |
+| rotated_cow | 232,231 | 317,820 | 1,382,454 | 1.37x |
 
 APF beats PNG on images with large uniform regions, limited palettes, or strong spatial
 coherence. Complex photographic content (like cows) still favors PNG's DEFLATE -- but

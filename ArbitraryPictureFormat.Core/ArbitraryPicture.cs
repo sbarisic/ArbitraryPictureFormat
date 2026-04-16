@@ -20,6 +20,7 @@ namespace ArbitraryPictureFormat
 		SolidFill = 3,
 		MonoAlpha = 4,
 		PaethFullGrid = 5,
+		PaethChannelPlanes = 6,
 	}
 
 	public class ArbitraryPicture
@@ -264,6 +265,7 @@ namespace ArbitraryPictureFormat
 					candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
 
 				candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+				candidates.Add((PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
 			}
 			else
 			{
@@ -308,6 +310,10 @@ namespace ArbitraryPictureFormat
 						candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
 						added = true;
 						break;
+					case PixelEncoding.PaethChannelPlanes:
+						candidates.Add((PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
+						added = true;
+						break;
 				}
 
 				if (!added)
@@ -324,6 +330,7 @@ namespace ArbitraryPictureFormat
 					if (ImageData.Length > 0)
 						candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
 					candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+					candidates.Add((PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
 				}
 			}
 
@@ -670,6 +677,165 @@ namespace ArbitraryPictureFormat
 			return Helpers.PaethDecode(residuals, width, height);
 		}
 
+		byte[] EncodePaethChannelPlanes()
+		{
+			int w = Descriptor.Width, h = Descriptor.Height;
+			int total = w * h;
+			int pixelCount = ImageData.Length;
+
+			// Reconstruct full grid per channel
+			byte[] rFull = new byte[total];
+			byte[] gFull = new byte[total];
+			byte[] bFull = new byte[total];
+			byte[] aFull = new byte[total];
+
+			int idx = 0;
+			for (int y = 0; y < h; y++)
+			{
+				for (int x = 0; x < w; x++)
+				{
+					int i = y * w + x;
+					Color c = Descriptor.Get(x, y) ? ImageData[idx++] : Background;
+					rFull[i] = c.R;
+					gFull[i] = c.G;
+					bFull[i] = c.B;
+					aFull[i] = c.A;
+				}
+			}
+
+			bool isMono = true;
+			for (int i = 0; i < total; i++)
+				if (rFull[i] != gFull[i] || rFull[i] != bFull[i]) { isMono = false; break; }
+
+			bool hasR = !rFull.IsHomogenous();
+			bool hasG = !isMono && !gFull.IsHomogenous();
+			bool hasB = !isMono && !bFull.IsHomogenous();
+			bool hasA = !aFull.IsHomogenous();
+
+			byte channelFlags = (byte)(
+				(hasR ? 1 : 0) | (hasG ? 2 : 0) | (hasB ? 4 : 0) |
+				(hasA ? 8 : 0) | (isMono ? 16 : 0));
+
+			using (var ms = new MemoryStream())
+			using (var wr = new BinaryWriter(ms))
+			{
+				wr.Write(channelFlags);
+
+				if (hasR) WritePaethChannelPlane(wr, rFull, w, h, pixelCount);
+				else wr.Write(rFull[0]);
+
+				if (!isMono)
+				{
+					if (hasG) WritePaethChannelPlane(wr, gFull, w, h, pixelCount);
+					else wr.Write(gFull[0]);
+					if (hasB) WritePaethChannelPlane(wr, bFull, w, h, pixelCount);
+					else wr.Write(bFull[0]);
+				}
+
+				if (hasA) WritePaethChannelPlane(wr, aFull, w, h, pixelCount);
+				else wr.Write(aFull[0]);
+
+				return ms.ToArray();
+			}
+		}
+
+		// Paeth-encode full grid, then extract and compress only stencil-true residuals
+		void WritePaethChannelPlane(BinaryWriter wr, byte[] fullPlane, int width, int height, int pixelCount)
+		{
+			byte[] fullResiduals = Helpers.PaethEncode(fullPlane, width, height);
+
+			byte[] stencilResiduals = new byte[pixelCount];
+			int si = 0;
+			for (int y = 0; y < height; y++)
+				for (int x = 0; x < width; x++)
+					if (Descriptor.Get(x, y))
+						stencilResiduals[si++] = fullResiduals[y * width + x];
+
+			byte[] compressed = Helpers.Compress(stencilResiduals);
+			wr.Write(compressed.Length);
+			wr.Write(compressed);
+		}
+
+		void DecodePaethChannelPlanes(BinaryReader Reader, int pixelCount)
+		{
+			int w = Descriptor.Width, h = Descriptor.Height;
+			byte channelFlags = Reader.ReadByte();
+			bool hasR = (channelFlags & 1) != 0;
+			bool hasG = (channelFlags & 2) != 0;
+			bool hasB = (channelFlags & 4) != 0;
+			bool hasA = (channelFlags & 8) != 0;
+			bool isMono = (channelFlags & 16) != 0;
+
+			byte[] rPlane = hasR
+				? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.R)
+				: FillPlane(w * h, Reader.ReadByte());
+			byte[] gPlane, bPlane;
+			if (isMono)
+			{
+				gPlane = rPlane;
+				bPlane = rPlane;
+			}
+			else
+			{
+				gPlane = hasG
+					? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.G)
+					: FillPlane(w * h, Reader.ReadByte());
+				bPlane = hasB
+					? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.B)
+					: FillPlane(w * h, Reader.ReadByte());
+			}
+			byte[] aPlane = hasA
+				? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.A)
+				: FillPlane(w * h, Reader.ReadByte());
+
+			// Extract stencil-true pixels from the reconstructed full grid
+			ImageData = new Color[pixelCount];
+			int idx = 0;
+			for (int y = 0; y < h; y++)
+				for (int x = 0; x < w; x++)
+					if (Descriptor.Get(x, y))
+					{
+						int i = y * w + x;
+						ImageData[idx++] = Color.FromArgb(aPlane[i], rPlane[i], gPlane[i], bPlane[i]);
+					}
+		}
+
+		// Decompress stencil-true residuals, rebuild full grid with background, then Paeth-decode
+		byte[] ReadPaethChannelPlane(BinaryReader r, int width, int height, int pixelCount, byte bgVal)
+		{
+			int compLen = r.ReadInt32();
+			byte[] compressed = r.ReadBytes(compLen);
+			byte[] stencilResiduals = Helpers.Decompress(compressed, pixelCount);
+
+			int total = width * height;
+			byte[] fullResiduals = new byte[total];
+
+			// Insert stencil-true residuals at their grid positions;
+			// stencil-false positions get the residual that would produce bgVal after Paeth decode.
+			// We must compute these on the fly during Paeth decode instead.
+			// Use a custom decode that knows the stencil and background.
+			byte[] result = new byte[total];
+			int si = 0;
+			for (int y = 0; y < height; y++)
+			{
+				for (int x = 0; x < width; x++)
+				{
+					int i = y * width + x;
+					byte a = x > 0 ? result[i - 1] : (byte)0;
+					byte b = y > 0 ? result[i - width] : (byte)0;
+					byte c = (x > 0 && y > 0) ? result[i - width - 1] : (byte)0;
+					byte predicted = Helpers.PaethPredict(a, b, c);
+
+					if (Descriptor.Get(x, y))
+						result[i] = (byte)(stencilResiduals[si++] + predicted);
+					else
+						result[i] = bgVal;
+				}
+			}
+
+			return result;
+		}
+
 		// --- Deserialize ---
 
 		void Deserialize(Stream S)
@@ -699,6 +865,7 @@ namespace ArbitraryPictureFormat
 				case PixelEncoding.SolidFill: DecodeSolidFill(Reader, pixelCount); break;
 				case PixelEncoding.MonoAlpha: DecodeMonoAlpha(Reader, pixelCount); break;
 				case PixelEncoding.PaethFullGrid: DecodePaethFullGrid(Reader, pixelCount); break;
+				case PixelEncoding.PaethChannelPlanes: DecodePaethChannelPlanes(Reader, pixelCount); break;
 				default: throw new InvalidDataException("Unknown pixel encoding mode: " + (int)mode);
 			}
 		}

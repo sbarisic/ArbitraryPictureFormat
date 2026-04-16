@@ -9,7 +9,7 @@
     <PackageId>ArbitraryPictureFormat</PackageId>
     <Version>2.0.1</Version>
     <Authors>sbarisic</Authors>
-    <Description>APF (Arbitrary Picture Format) — a lossless image format with 6 encoding strategies, multi-image support, per-image metadata, and a microcontroller-friendly decoder. Encode and decode APF v1.0/v1.1/v2.0 files.</Description>
+    <Description>APF (Arbitrary Picture Format) — a lossless image format with 7 encoding strategies, multi-image support, per-image metadata, and a microcontroller-friendly decoder. Encode and decode APF v1.0/v1.1/v2.0 files.</Description>
     <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/sbarisic/ArbitraryPictureFormat</PackageProjectUrl>
     <RepositoryUrl>https://github.com/sbarisic/ArbitraryPictureFormat.git</RepositoryUrl>
