@@ -1593,28 +1593,226 @@ namespace ArbitraryPictureFormat
 			return result;
 		}
 
-		// --- Compress/Decompress: picks best of RLE vs LZ77 ---
-		// Prefix byte: 0 = RLE, 1 = LZ77
+		// --- rANS (Range Asymmetric Numeral Systems) entropy coding ---
+
+		const int RANS_SCALE_BITS = 12;
+		const int RANS_SCALE = 1 << RANS_SCALE_BITS; // 4096
+		const uint RANS_LOWER = 1u << 23;
+
+		static int[] RansNormalizeFrequencies(int[] freq, int total)
+		{
+			int[] norm = new int[256];
+			int assigned = 0;
+
+			for (int i = 0; i < 256; i++)
+			{
+				if (freq[i] > 0)
+				{
+					norm[i] = Math.Max(1, (int)Math.Round((double)freq[i] * RANS_SCALE / total));
+					assigned += norm[i];
+				}
+			}
+
+			int diff = assigned - RANS_SCALE;
+			while (diff != 0)
+			{
+				int bestIdx = -1;
+				double bestScore = double.NegativeInfinity;
+
+				for (int i = 0; i < 256; i++)
+				{
+					if (norm[i] == 0) continue;
+					if (diff > 0 && norm[i] <= 1) continue;
+
+					double ideal = (double)freq[i] * RANS_SCALE / total;
+					double score = (diff > 0) ? (norm[i] - ideal) : (ideal - norm[i]);
+
+					if (score > bestScore)
+					{
+						bestScore = score;
+						bestIdx = i;
+					}
+				}
+
+				if (bestIdx < 0) break;
+
+				if (diff > 0) { norm[bestIdx]--; diff--; }
+				else { norm[bestIdx]++; diff++; }
+			}
+
+			return norm;
+		}
+
+		public static byte[] RansEncode(byte[] data)
+		{
+			if (data.Length == 0) return new byte[0];
+
+			// Count frequencies
+			int[] freq = new int[256];
+			for (int i = 0; i < data.Length; i++)
+				freq[data[i]]++;
+
+			int[] normFreq = RansNormalizeFrequencies(freq, data.Length);
+
+			// Build cumulative frequency table
+			int[] cumFreq = new int[257];
+			for (int i = 0; i < 256; i++)
+				cumFreq[i + 1] = cumFreq[i] + normFreq[i];
+
+			// Encode symbols in reverse order
+			uint state = RANS_LOWER;
+			var encoded = new List<byte>();
+
+			for (int i = data.Length - 1; i >= 0; i--)
+			{
+				byte s = data[i];
+				int fs = normFreq[s];
+				int cs = cumFreq[s];
+
+				// Renormalize: stream out bytes until state is small enough
+				uint xMax = ((RANS_LOWER >> RANS_SCALE_BITS) << 8) * (uint)fs;
+				while (state >= xMax)
+				{
+					encoded.Add((byte)(state & 0xFF));
+					state >>= 8;
+				}
+
+				// Encode: state = (state / fs) * M + (state % fs) + cs
+				state = ((state / (uint)fs) << RANS_SCALE_BITS) + (state % (uint)fs) + (uint)cs;
+			}
+
+			// Build output: [freq_header][final_state][encoded_bytes_reversed]
+			var result = new List<byte>();
+
+			// Compact frequency table: [uint16 count][count × (byte sym, uint16 freq)]
+			int nonZero = 0;
+			for (int i = 0; i < 256; i++)
+				if (normFreq[i] > 0) nonZero++;
+
+			result.Add((byte)(nonZero & 0xFF));
+			result.Add((byte)((nonZero >> 8) & 0xFF));
+
+			for (int i = 0; i < 256; i++)
+			{
+				if (normFreq[i] > 0)
+				{
+					result.Add((byte)i);
+					result.Add((byte)(normFreq[i] & 0xFF));
+					result.Add((byte)((normFreq[i] >> 8) & 0xFF));
+				}
+			}
+
+			// Final state (4 bytes LE)
+			result.Add((byte)(state & 0xFF));
+			result.Add((byte)((state >> 8) & 0xFF));
+			result.Add((byte)((state >> 16) & 0xFF));
+			result.Add((byte)((state >> 24) & 0xFF));
+
+			// Encoded data in forward reading order
+			for (int i = encoded.Count - 1; i >= 0; i--)
+				result.Add(encoded[i]);
+
+			return result.ToArray();
+		}
+
+		public static byte[] RansDecode(byte[] data, int decodedLength)
+		{
+			if (data.Length == 0 || decodedLength == 0) return new byte[decodedLength];
+
+			int pos = 0;
+
+			// Read frequency table
+			int numSymbols = data[pos] | (data[pos + 1] << 8);
+			pos += 2;
+
+			int[] freq = new int[256];
+			int[] cumFreq = new int[257];
+
+			for (int i = 0; i < numSymbols; i++)
+			{
+				byte sym = data[pos++];
+				int f = data[pos] | (data[pos + 1] << 8);
+				pos += 2;
+				freq[sym] = f;
+			}
+
+			for (int i = 0; i < 256; i++)
+				cumFreq[i + 1] = cumFreq[i] + freq[i];
+
+			// Reverse lookup table: cumulative freq → symbol
+			byte[] cumToSym = new byte[RANS_SCALE];
+			for (int s = 0; s < 256; s++)
+				for (int j = cumFreq[s]; j < cumFreq[s + 1]; j++)
+					cumToSym[j] = (byte)s;
+
+			// Read initial state
+			uint state = (uint)(data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24));
+			pos += 4;
+
+			// Decode symbols
+			byte[] result = new byte[decodedLength];
+
+			for (int i = 0; i < decodedLength; i++)
+			{
+				uint cumVal = state & (uint)(RANS_SCALE - 1);
+				byte s = cumToSym[cumVal];
+				result[i] = s;
+
+				// Advance state: state = freq[s] * (state >> SCALE) + (cumVal - cumFreq[s])
+				state = (uint)freq[s] * (state >> RANS_SCALE_BITS) + cumVal - (uint)cumFreq[s];
+
+				// Renormalize
+				while (state < RANS_LOWER && pos < data.Length)
+					state = (state << 8) | data[pos++];
+			}
+
+			return result;
+		}
+
+		// --- Compress/Decompress: picks best of RLE, LZ77, rANS ---
+		// Prefix byte: 0 = RLE, 1 = LZ77, 2 = rANS, 3 = LZ77+rANS
 
 		public static byte[] Compress(byte[] data)
 		{
 			byte[] rle = RleEncode(data);
 			byte[] lz = Lz77Encode(data);
+			byte[] rans = RansEncode(data);
 
-			if (rle.Length <= lz.Length + 1)
+			// LZ77+rANS: prefix LZ length so decoder knows intermediate size
+			byte[] lzRansInner = RansEncode(lz);
+			byte[] lzRans = new byte[4 + lzRansInner.Length];
+			lzRans[0] = (byte)(lz.Length & 0xFF);
+			lzRans[1] = (byte)((lz.Length >> 8) & 0xFF);
+			lzRans[2] = (byte)((lz.Length >> 16) & 0xFF);
+			lzRans[3] = (byte)((lz.Length >> 24) & 0xFF);
+			Buffer.BlockCopy(lzRansInner, 0, lzRans, 4, lzRansInner.Length);
+
+			// Pick the smallest: prefix + payload
+			int rleTotal = 1 + rle.Length;
+			int lzTotal = 1 + lz.Length;
+			int ransTotal = 1 + rans.Length;
+			int lzRansTotal = 1 + lzRans.Length;
+
+			int best = rleTotal;
+			byte bestMode = 0;
+
+			if (lzTotal < best) { best = lzTotal; bestMode = 1; }
+			if (ransTotal < best) { best = ransTotal; bestMode = 2; }
+			if (lzRansTotal < best) { best = lzRansTotal; bestMode = 3; }
+
+			byte[] payload;
+			switch (bestMode)
 			{
-				byte[] result = new byte[1 + rle.Length];
-				result[0] = 0;
-				Buffer.BlockCopy(rle, 0, result, 1, rle.Length);
-				return result;
+				case 0: payload = rle; break;
+				case 1: payload = lz; break;
+				case 2: payload = rans; break;
+				default: payload = lzRans; break;
 			}
-			else
-			{
-				byte[] result = new byte[1 + lz.Length];
-				result[0] = 1;
-				Buffer.BlockCopy(lz, 0, result, 1, lz.Length);
-				return result;
-			}
+
+			byte[] result = new byte[1 + payload.Length];
+			result[0] = bestMode;
+			Buffer.BlockCopy(payload, 0, result, 1, payload.Length);
+			return result;
 		}
 
 		public static byte[] Decompress(byte[] data, int decodedLength)
@@ -1624,10 +1822,20 @@ namespace ArbitraryPictureFormat
 			byte[] payload = new byte[data.Length - 1];
 			Buffer.BlockCopy(data, 1, payload, 0, payload.Length);
 
-			if (mode == 0)
-				return RleDecode(payload, decodedLength);
-			else
-				return Lz77Decode(payload, decodedLength);
+			switch (mode)
+			{
+				case 0: return RleDecode(payload, decodedLength);
+				case 1: return Lz77Decode(payload, decodedLength);
+				case 2: return RansDecode(payload, decodedLength);
+				case 3:
+					int lzLen = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+					byte[] ransPayload = new byte[payload.Length - 4];
+					Buffer.BlockCopy(payload, 4, ransPayload, 0, ransPayload.Length);
+					byte[] lz = RansDecode(ransPayload, lzLen);
+					return Lz77Decode(lz, decodedLength);
+				default:
+					return RleDecode(payload, decodedLength);
+			}
 		}
 	}
 }

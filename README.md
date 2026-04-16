@@ -7,7 +7,7 @@ that a microcontroller can decode without breaking a sweat.
 
 ```
   PNG: 24,747 bytes
-  APF: 15,240 bytes  <-- 38% smaller (circular_image.png)
+  APF: 13,891 bytes  <-- 44% smaller (circular_image.png)
 ```
 
 ---
@@ -26,7 +26,7 @@ embeddable on resource-constrained hardware.
 
 - **Lossless** -- bit-perfect round-trip, every pixel preserved
 - **7 encoding modes** -- the encoder races all strategies and keeps the winner
-- **Dual compression** -- RLE and LZ77, auto-selected per data stream
+- **Dual compression** -- RLE, LZ77, rANS, and LZ77+rANS, auto-selected per data stream
 - **Z-order curves** -- Morton-code pixel reordering for better spatial locality
 - **Arbitrary shapes** -- stencil mask supports non-rectangular image regions
 - **Sub-byte packing** -- palette indices packed to minimum bit width (1/2/4/8 bpp)
@@ -52,7 +52,7 @@ The encoder evaluates all applicable strategies and serializes the smallest:
 | `6` | **Paeth Channel Planes** | Non-rectangular images -- 2D Paeth prediction, stores only non-background residuals |
 
 Each mode applies its own transform pipeline, then compresses through the shared
-**RLE / LZ77** layer (whichever produces fewer bytes wins).
+**RLE / LZ77 / rANS** layer (whichever produces the fewest bytes wins).
 
 ## Compression Pipeline
 
@@ -60,12 +60,12 @@ Each mode applies its own transform pipeline, then compresses through the shared
 Raw pixels
     |
     v
-+---------------+    +----------------+    +---------------+    +------------+
-|  Z-Order      |--->|  Mode-specific |--->|  Delta        |--->|  RLE or    |
-|  Reorder      |    |  Transform     |    |  Encoding     |    |  LZ77      |
-+---------------+    +----------------+    +---------------+    +------------+
++---------------+    +----------------+    +---------------+    +------------------+
+|  Z-Order      |--->|  Mode-specific |--->|  Delta        |--->|  RLE / LZ77 /    |
+|  Reorder      |    |  Transform     |    |  Encoding     |    |  rANS / LZ77+rANS|
++---------------+    +----------------+    +---------------+    +------------------+
   Morton curves        Channel split        Byte-level          Auto-pick
-  for spatial          Paeth predict         differencing        smallest
+  for spatial          Paeth predict         differencing        smallest of 4
   locality             Palette map
 ```
 
@@ -196,9 +196,9 @@ compiled binary directly from `bin/apf.exe`.
 dotnet test ArbitraryPictureFormat.Tests
 ```
 
-Fourteen tests across three classes: five file-size regression thresholds, a lossless
-round-trip check, a diagnostic report, and seven multi-image / metadata / version
-round-trip tests.
+Sixteen tests across three classes: five file-size regression thresholds, a lossless
+round-trip check, rANS encoder/decoder validation, a diagnostic report, and seven
+multi-image / metadata / version round-trip tests.
 
 ### Build & run the viewer
 
@@ -226,15 +226,16 @@ The companion effect plugin (`ArbitraryPictureFormat.PaintDotNet.Effect`) adds a
 
 | Image | PNG | APF | BMP | APF vs PNG |
 |-------|-----|-----|-----|------------|
-| circular_image | 24,747 | 15,240 | 921,654 | **0.62x** |
-| terminal | 43,977 | 42,645 | 3,686,454 | **0.97x** |
-| sample | 22,249 | 21,461 | 921,654 | **0.96x** |
-| cow | 420,205 | 684,985 | 2,764,854 | 1.63x |
-| rotated_cow | 232,231 | 317,820 | 1,382,454 | 1.37x |
+| circular_image | 24,747 | 13,891 | 921,654 | **0.56x** |
+| terminal | 43,977 | 35,713 | 3,686,454 | **0.81x** |
+| sample | 22,249 | 21,386 | 921,654 | **0.96x** |
+| cow | 420,205 | 441,070 | 2,764,854 | 1.05x |
+| rotated_cow | 232,231 | 203,652 | 1,382,454 | **0.88x** |
 
 APF beats PNG on images with large uniform regions, limited palettes, or strong spatial
-coherence. Complex photographic content (like cows) still favors PNG's DEFLATE -- but
-APF's decoder is *orders of magnitude* simpler.
+coherence. The rANS entropy coder now brings photographic images (like rotated_cow)
+below PNG size too. Only complex unmasked photos still slightly favor PNG's DEFLATE --
+but APF's decoder is *orders of magnitude* simpler.
 
 ## Embedding the Decoder
 

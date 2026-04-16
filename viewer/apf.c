@@ -101,7 +101,71 @@ static uint8_t *lz77_decode(const uint8_t *data, int data_len, int decoded_len) 
     return result;
 }
 
-/* ---------- Decompress (mode byte + RLE or LZ77) ---------- */
+/* ---------- rANS decode ---------- */
+
+#define RANS_SCALE_BITS 12
+#define RANS_SCALE (1 << RANS_SCALE_BITS) /* 4096 */
+#define RANS_LOWER (1u << 23)
+
+static uint8_t *rans_decode(const uint8_t *data, int data_len, int decoded_len) {
+    if (data_len == 0 || decoded_len == 0)
+        return (uint8_t *)calloc(decoded_len > 0 ? decoded_len : 1, 1);
+
+    uint8_t *result = (uint8_t *)malloc(decoded_len);
+    if (!result) return NULL;
+
+    int pos = 0;
+
+    /* Read frequency table */
+    int num_symbols = data[pos] | (data[pos + 1] << 8);
+    pos += 2;
+
+    int freq[256] = {0};
+    int cum_freq[257] = {0};
+
+    for (int i = 0; i < num_symbols && pos + 2 < data_len; i++) {
+        uint8_t sym = data[pos++];
+        int f = data[pos] | (data[pos + 1] << 8);
+        pos += 2;
+        freq[sym] = f;
+    }
+
+    for (int i = 0; i < 256; i++)
+        cum_freq[i + 1] = cum_freq[i] + freq[i];
+
+    /* Reverse lookup table: cumulative freq -> symbol */
+    uint8_t cum_to_sym[RANS_SCALE];
+    for (int s = 0; s < 256; s++)
+        for (int j = cum_freq[s]; j < cum_freq[s + 1]; j++)
+            cum_to_sym[j] = (uint8_t)s;
+
+    /* Read initial state */
+    uint32_t state = (uint32_t)data[pos]
+                   | ((uint32_t)data[pos+1] << 8)
+                   | ((uint32_t)data[pos+2] << 16)
+                   | ((uint32_t)data[pos+3] << 24);
+    pos += 4;
+
+    /* Decode symbols */
+    for (int i = 0; i < decoded_len; i++) {
+        uint32_t slot = state & (RANS_SCALE - 1);
+        uint8_t sym = cum_to_sym[slot];
+        result[i] = sym;
+
+        int fs = freq[sym];
+        int cs = cum_freq[sym];
+
+        state = (uint32_t)fs * (state >> RANS_SCALE_BITS) + slot - (uint32_t)cs;
+
+        /* Renormalize: read bytes until state >= RANS_LOWER */
+        while (state < RANS_LOWER && pos < data_len)
+            state = (state << 8) | data[pos++];
+    }
+
+    return result;
+}
+
+/* ---------- Decompress (mode byte + RLE / LZ77 / rANS / LZ77+rANS) ---------- */
 
 static uint8_t *decompress(const uint8_t *data, int data_len, int decoded_len) {
     if (data_len == 0) return (uint8_t *)calloc(decoded_len, 1);
@@ -109,10 +173,20 @@ static uint8_t *decompress(const uint8_t *data, int data_len, int decoded_len) {
     const uint8_t *payload = data + 1;
     int payload_len = data_len - 1;
 
-    if (mode == 0)
-        return rle_decode(payload, payload_len, decoded_len);
-    else
-        return lz77_decode(payload, payload_len, decoded_len);
+    switch (mode) {
+        case 0: return rle_decode(payload, payload_len, decoded_len);
+        case 1: return lz77_decode(payload, payload_len, decoded_len);
+        case 2: return rans_decode(payload, payload_len, decoded_len);
+        case 3: {
+            int lz_len = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+            uint8_t *lz = rans_decode(payload + 4, payload_len - 4, lz_len);
+            if (!lz) return NULL;
+            uint8_t *result = lz77_decode(lz, lz_len, decoded_len);
+            free(lz);
+            return result;
+        }
+        default: return rle_decode(payload, payload_len, decoded_len);
+    }
 }
 
 /* Read compressed blob: int32 len + bytes -> decompress */
