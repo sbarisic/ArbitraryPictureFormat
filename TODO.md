@@ -25,10 +25,18 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### High Priority
 
+* No High priority items *
+
+### ON HOLD
+
 - [ ] [CPX: 4] Add cross-decoder conformance tests that encode APF files in .NET and verify the C decoder/viewer can decode every supported version and pixel encoding.
 - [ ] [CPX: 4] Add CLI support for building and unpacking multi-image APF files, including named layers and per-layer metadata.
 
 ### Medium Priority
+
+* No Medium priority items *
+
+### ON HOLD
 
 - [ ] [CPX: 3] Add CLI options to attach metadata during encode and to update metadata in existing APF files without round-tripping through Paint.NET.
 - [ ] [CPX: 3] Add stable APF golden fixtures for v1.0, v1.1, v2.0, and all seven pixel encoding modes so backward compatibility is tested independently from the current encoder.
@@ -38,12 +46,20 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### Lower Priority
 
+* No Lower priority items *
+
+### ON HOLD
+
 - [ ] [CPX: 2] Add an APF inspection command that prints the selected pixel encoding, compressed stream modes, stencil size, and payload size breakdown.
 - [ ] [CPX: 3] Add a small sample app that demonstrates using the NuGet package to create, inspect, and decode APF files.
 
 ---
 
 ## Improvements
+
+* No Improvements items *
+
+### ON HOLD
 
 - [ ] [CPX: 3] Add GitHub Actions or equivalent CI for `dotnet test`, `dotnet pack`, and a C viewer build on at least Windows and one non-MSVC toolchain.
 - [ ] [CPX: 4] Add fuzz/corruption tests for the C# and C decoders using malformed headers, invalid lengths, truncated streams, and impossible dimensions.
@@ -57,6 +73,10 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ## Documentation **LOW PRIORITY**
 
+* No Documentation items *
+
+### ON HOLD
+
 - [ ] [CPX: 3] Write a full binary format specification covering headers, metadata strings, stencil encoding, all pixel modes, and all compression stream modes.
 - [ ] [CPX: 2] Add XML API documentation for `ArbitraryPicture`, `ApfFile`, `ApfImage`, `ShapeDesc`, and public helper methods that are intended to remain public.
 - [ ] [CPX: 2] Add a focused getting started guide for the CLI, NuGet library, Paint.NET plugin, and C decoder as separate workflows.
@@ -69,6 +89,10 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 ## Code Cleanup & Technical Debt
 
 ### Code Refactoring
+
+* No Code Refactoring items *
+
+### ON HOLD
 
 - [ ] [CPX: 4] Split `ArbitraryPicture.cs` into focused files for the image model, shape descriptor, pixel encoders, compression helpers, and bitmap interop.
 - [ ] [CPX: 2] Deduplicate the two `ApfMetadataStore` implementations used by the Paint.NET file type and effect plugins.
