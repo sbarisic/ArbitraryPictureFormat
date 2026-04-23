@@ -1,13 +1,13 @@
 using PaintDotNet;
 using PaintDotNet.Effects;
+using PaintDotNet.Imaging;
 using PaintDotNet.IndirectUI;
 using PaintDotNet.PropertySystem;
-using System.Drawing;
 
 namespace ArbitraryPictureFormat.PaintDotNet.Effect;
 
 [PluginSupportInfo<ApfEffectPluginSupportInfo>]
-public class ApfMetadataEffect : PropertyBasedEffect
+public class ApfMetadataEffect : PropertyBasedBitmapEffect
 {
 	private enum PropertyNames
 	{
@@ -20,9 +20,8 @@ public class ApfMetadataEffect : PropertyBasedEffect
 	public ApfMetadataEffect()
 		: base(
 			"Edit .apf",
-			(Image)null,
 			null,
-			new EffectOptions { Flags = EffectFlags.Configurable })
+			BitmapEffectOptions.Create() with { IsConfigurable = true })
 	{
 	}
 
@@ -74,18 +73,19 @@ public class ApfMetadataEffect : PropertyBasedEffect
 		props[ControlInfoPropertyNames.WindowTitle].Value = "Edit APF Metadata";
 	}
 
-	protected override void OnSetRenderInfo(PropertyBasedEffectConfigToken newToken, RenderArgs dstArgs, RenderArgs srcArgs)
+	protected override void OnSetToken(PropertyBasedEffectConfigToken newToken)
 	{
-		base.OnSetRenderInfo(newToken, dstArgs, srcArgs);
-
 		string text = newToken.GetProperty<StringProperty>(PropertyNames.Metadata).Value;
 		ApfMetadataStore.SetLayer(_layerIndex, ApfMetadataStore.Parse(text));
+		base.OnSetToken(newToken);
 	}
 
-	protected override void OnRender(Rectangle[] renderRects, int startIndex, int length)
+	protected override void OnRender(IBitmapEffectOutput output)
 	{
-		// No pixel changes — copy source to destination unchanged
-		for (int i = startIndex; i < startIndex + length; i++)
-			DstArgs.Surface.CopySurface(SrcArgs.Surface, renderRects[i].Location, renderRects[i]);
+		using IEffectInputBitmap<ColorBgra32> sourceBitmap = Environment.GetSourceBitmapBgra32();
+		using IBitmapLock<ColorBgra32> dst = output.LockBgra32();
+		using IBitmapLock<ColorBgra32> src = sourceBitmap.Lock(output.Bounds);
+
+		src.AsRegionPtr().CopyTo(dst.AsRegionPtr());
 	}
 }

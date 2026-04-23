@@ -1054,47 +1054,86 @@ static int read_metadata(Reader* r, ApfMetadata* meta) {
 
 	meta->entries = (ApfMetadataEntry*)apf_calloc_array((size_t)count, sizeof(ApfMetadataEntry));
 	if (!meta->entries) return 0;
-	meta->count = count;
 
 	for (int i = 0; i < count; i++) {
-		meta->entries[i].key = read_string(r);
-		meta->entries[i].value = read_string(r);
-		if (!meta->entries[i].key || !meta->entries[i].value) return 0;
+		ApfMetadataEntry* entry = &meta->entries[i];
+		entry->key = NULL;
+		entry->value = NULL;
+
+		entry->key = read_string(r);
+		if (!entry->key) {
+			return 0;
+		}
+
+		entry->value = read_string(r);
+		if (!entry->value) {
+			free(entry->key);
+			entry->key = NULL;
+			return 0;
+		}
+
+		meta->count++;
 	}
 	return 1;
 }
 
 static void free_metadata(ApfMetadata* meta) {
+	if (!meta || !meta->entries) {
+		if (meta) meta->count = 0;
+		return;
+	}
+
 	for (int i = 0; i < meta->count; i++) {
 		free(meta->entries[i].key);
+		meta->entries[i].key = NULL;
 		free(meta->entries[i].value);
+		meta->entries[i].value = NULL;
 	}
 	free(meta->entries);
 	meta->entries = NULL;
 	meta->count = 0;
 }
 
+static void free_stencil(Stencil* stencil) {
+	free(stencil->bits);
+	stencil->bits = NULL;
+	stencil->width = 0;
+	stencil->height = 0;
+}
+
+static void free_image(ApfImage* image) {
+	free(image->pixels);
+	image->pixels = NULL;
+	free(image->name);
+	image->name = NULL;
+	free_metadata(&image->metadata);
+	image->width = 0;
+	image->height = 0;
+}
+
 /* ---------- Decode single-image payload (stencil + bg + pixels + mode) ---------- */
 
 static int decode_payload(Reader* r, ApfImage* img) {
 	Stencil stencil = { 0 };
+	const uint8_t* stencil_bits;
 	if (!decode_stencil(r, &stencil)) return 0;
+	stencil_bits = stencil.bits;
+	if (!stencil_bits) {
+		free_stencil(&stencil);
+		return 0;
+	}
 
 	int32_t bg_argb, pixel_count;
 	uint8_t mode;
-	if (!read_i32(r, &bg_argb) || !read_i32(r, &pixel_count) || !read_u8(r, &mode)) {
-		free(stencil.bits);
-		return 0;
-	}
+	if (!read_i32(r, &bg_argb) || !read_i32(r, &pixel_count) || !read_u8(r, &mode))
+		goto fail;
 	int total;
 	int shape_count = stencil_count(&stencil);
 	if (!checked_total_pixels(stencil.width, stencil.height, &total) ||
 		!checked_count(pixel_count, total) ||
 		shape_count < 0 ||
-		pixel_count != shape_count) {
-		free(stencil.bits);
-		return 0;
-	}
+		pixel_count != shape_count)
+		goto fail;
 	uint32_t bg_rgba = argb_to_rgba(bg_argb);
 
 	uint32_t* image_data = NULL;
@@ -1111,27 +1150,34 @@ static int decode_payload(Reader* r, ApfImage* img) {
 		break;
 	}
 
-	if (!image_data) { free(stencil.bits); return 0; }
+	if (!image_data) goto fail;
 
 	int w = stencil.width, h = stencil.height;
 	uint32_t* pixels = (uint32_t*)apf_malloc_array((size_t)total, sizeof(uint32_t));
-	if (!pixels) { free(image_data); free(stencil.bits); return 0; }
+	if (!pixels) {
+		free(image_data);
+		goto fail;
+	}
 
 	int img_idx = 0;
 	for (int i = 0; i < total; i++) {
-		if ((stencil.bits[i / 8] >> (i % 8)) & 1)
+		if ((stencil_bits[i / 8] >> (i % 8)) & 1)
 			pixels[i] = image_data[img_idx++];
 		else
 			pixels[i] = bg_rgba;
 	}
 
 	free(image_data);
-	free(stencil.bits);
+	free_stencil(&stencil);
 
 	img->width = w;
 	img->height = h;
 	img->pixels = pixels;
 	return 1;
+
+fail:
+	free_stencil(&stencil);
+	return 0;
 }
 
 /* ---------- Public API ---------- */
@@ -1156,9 +1202,9 @@ static ApfFile* apf_load_reader(Reader* reader) {
 
 	switch (version) {
 	case 0x10: { /* v1.0: single image, no metadata */
-		apf->image_count = 1;
 		apf->images = (ApfImage*)apf_calloc_array(1, sizeof(ApfImage));
 		if (!apf->images) goto fail;
+		apf->image_count = 1;
 		apf->images[0].name = apf_strdup("");
 		if (!apf->images[0].name) goto fail;
 		if (!decode_payload(reader, &apf->images[0])) goto fail;
@@ -1166,9 +1212,9 @@ static ApfFile* apf_load_reader(Reader* reader) {
 	}
 
 	case 0x11: { /* v1.1: single image with metadata */
-		apf->image_count = 1;
 		apf->images = (ApfImage*)apf_calloc_array(1, sizeof(ApfImage));
 		if (!apf->images) goto fail;
+		apf->image_count = 1;
 		apf->images[0].name = apf_strdup("");
 		if (!apf->images[0].name) goto fail;
 		if (!read_metadata(reader, &apf->images[0].metadata)) goto fail;
@@ -1184,11 +1230,12 @@ static ApfFile* apf_load_reader(Reader* reader) {
 			goto fail;
 		}
 
-		apf->image_count = image_count;
 		apf->images = (ApfImage*)apf_calloc_array((size_t)image_count, sizeof(ApfImage));
 		if (!apf->images) goto fail;
+		apf->image_count = 0;
 
 		for (int i = 0; i < image_count; i++) {
+			apf->image_count = i + 1;
 			apf->images[i].name = read_string(reader);
 			if (!apf->images[i].name) goto fail;
 
@@ -1271,9 +1318,7 @@ ApfImage* apf_file_get_image(ApfFile* file, const char* name) {
 void apf_free_file(ApfFile* file) {
 	if (!file) return;
 	for (int i = 0; i < file->image_count; i++) {
-		free(file->images[i].pixels);
-		free(file->images[i].name);
-		free_metadata(&file->images[i].metadata);
+		free_image(&file->images[i]);
 	}
 	free(file->images);
 	free(file);

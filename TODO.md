@@ -106,6 +106,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### Active Bugs
 
+* No active bugs *
 
 ### Uncategorized
 
@@ -117,7 +118,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 - Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 29 tests.
 - C viewer build baseline: `cmake --build viewer\build --config Debug --target apf_viewer` succeeds.
-- Paint.NET plugin build baseline: both plugin projects build successfully, with existing Paint.NET reference warnings.
+- Paint.NET plugin build baseline: both plugin projects build warning-free.
 - Treat the binary format as compatibility-sensitive: add fixtures before changing serialized bytes, headers, compression mode selection, or metadata layout.
 - Keep the C decoder dependency-free and portable C99; viewer-only dependencies such as Raylib should stay outside `apf.c` and `apf.h`.
 - Prefer adding tests before codec changes, especially when touching rANS, LZ77, stencil/Z-order mapping, or Paeth channel-plane reconstruction.
@@ -141,6 +142,8 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 - [x] Added xUnit coverage for file-size thresholds, lossless round-trips, compression round-trips, metadata, versions, and multi-image containers.
 - [x] Added NuGet package metadata for the core library.
 - [x] Added Z-order stencil serialization and sub-byte palette index packing.
+- [x] Aligned the Paint.NET plugin projects with Paint.NET's desktop framework dependencies by enabling WPF and explicitly referencing `System.Runtime.Serialization.Formatters`, removing the MSB3277 assembly conflict warnings.
+- [x] Migrated `ApfMetadataEffect` from the obsolete classic `PropertyBasedEffect` base class to `PropertyBasedBitmapEffect`, preserving the metadata UI while removing the final Paint.NET deprecation warning.
 
 ### Fixed Bugs
 
@@ -153,3 +156,4 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 - [x] Rejected zero-image APF files with clear .NET serialization/deserialization errors and matching C decoder rejection.
 - [x] Updated `ArbitraryPicture.FromFile` to load any single-image APF container and to reject multi-image files with a clear error directing callers to `ApfFile.FromFile`.
 - [x] Exposed an in-memory C decoder API via `apf_load_memory(const uint8_t *data, size_t size)` alongside `apf_load_file`.
+- [x] Tightened C decoder partial-construction cleanup so metadata/image frees only traverse initialized state and stencil ownership is explicit for static analysis.
