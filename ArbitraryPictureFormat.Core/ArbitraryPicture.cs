@@ -397,7 +397,7 @@ namespace ArbitraryPictureFormat
 		static byte[] ReadCompressedPlane(BinaryReader r, int pixelCount)
 		{
 			int len = r.ReadInt32();
-			byte[] compressed = r.ReadBytes(len);
+			byte[] compressed = ApfReadHelpers.ReadBytesExact(r, len, "compressed plane");
 			byte[] delta = Helpers.Decompress(compressed, pixelCount);
 			return Helpers.DeltaDecode(delta);
 		}
@@ -672,8 +672,8 @@ namespace ArbitraryPictureFormat
 		static byte[] ReadPaethPlane(BinaryReader r, int width, int height)
 		{
 			int len = r.ReadInt32();
-			byte[] compressed = r.ReadBytes(len);
-			byte[] residuals = Helpers.Decompress(compressed, width * height);
+			byte[] compressed = ApfReadHelpers.ReadBytesExact(r, len, "Paeth plane");
+			byte[] residuals = Helpers.Decompress(compressed, ApfReadHelpers.CheckedElementCount(width, height));
 			return Helpers.PaethDecode(residuals, width, height);
 		}
 
@@ -759,6 +759,7 @@ namespace ArbitraryPictureFormat
 		void DecodePaethChannelPlanes(BinaryReader Reader, int pixelCount)
 		{
 			int w = Descriptor.Width, h = Descriptor.Height;
+			int total = ApfReadHelpers.CheckedElementCount(w, h);
 			byte channelFlags = Reader.ReadByte();
 			bool hasR = (channelFlags & 1) != 0;
 			bool hasG = (channelFlags & 2) != 0;
@@ -768,7 +769,7 @@ namespace ArbitraryPictureFormat
 
 			byte[] rPlane = hasR
 				? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.R)
-				: FillPlane(w * h, Reader.ReadByte());
+				: FillPlane(total, Reader.ReadByte());
 			byte[] gPlane, bPlane;
 			if (isMono)
 			{
@@ -779,14 +780,14 @@ namespace ArbitraryPictureFormat
 			{
 				gPlane = hasG
 					? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.G)
-					: FillPlane(w * h, Reader.ReadByte());
+					: FillPlane(total, Reader.ReadByte());
 				bPlane = hasB
 					? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.B)
-					: FillPlane(w * h, Reader.ReadByte());
+					: FillPlane(total, Reader.ReadByte());
 			}
 			byte[] aPlane = hasA
 				? ReadPaethChannelPlane(Reader, w, h, pixelCount, Background.A)
-				: FillPlane(w * h, Reader.ReadByte());
+				: FillPlane(total, Reader.ReadByte());
 
 			// Extract stencil-true pixels from the reconstructed full grid
 			ImageData = new Color[pixelCount];
@@ -804,10 +805,10 @@ namespace ArbitraryPictureFormat
 		byte[] ReadPaethChannelPlane(BinaryReader r, int width, int height, int pixelCount, byte bgVal)
 		{
 			int compLen = r.ReadInt32();
-			byte[] compressed = r.ReadBytes(compLen);
+			byte[] compressed = ApfReadHelpers.ReadBytesExact(r, compLen, "Paeth channel plane");
 			byte[] stencilResiduals = Helpers.Decompress(compressed, pixelCount);
 
-			int total = width * height;
+			int total = ApfReadHelpers.CheckedElementCount(width, height);
 			byte[] fullResiduals = new byte[total];
 
 			// Insert stencil-true residuals at their grid positions;
@@ -853,8 +854,14 @@ namespace ArbitraryPictureFormat
 		public void DeserializePayload(BinaryReader Reader)
 		{
 			Descriptor = ShapeDesc.FromStream(Reader);
+			int totalPixels = ApfReadHelpers.CheckedElementCount(Descriptor.Width, Descriptor.Height);
+			int shapePixelCount = Descriptor.GetCount();
 			Background = Color.FromArgb(Reader.ReadInt32());
 			int pixelCount = Reader.ReadInt32();
+			ApfReadHelpers.ValidateCount(pixelCount, "image pixel", totalPixels);
+			if (pixelCount != shapePixelCount)
+				throw new InvalidDataException("Image pixel count does not match the shape descriptor.");
+
 			PixelEncoding mode = (PixelEncoding)Reader.ReadByte();
 
 			switch (mode)
@@ -911,22 +918,32 @@ namespace ArbitraryPictureFormat
 		void DecodePaletteIndexed(BinaryReader Reader, int pixelCount)
 		{
 			int paletteCount = Reader.ReadUInt16();
+			if (paletteCount <= 0 || paletteCount > 256)
+				throw new InvalidDataException("Palette color count must be between 1 and 256.");
+
 			Color[] palette = new Color[paletteCount];
 			for (int i = 0; i < paletteCount; i++)
 				palette[i] = Color.FromArgb(Reader.ReadInt32());
 
 			byte bitsPerIndex = Reader.ReadByte();
-			int packedLen = bitsPerIndex == 8 ? pixelCount : (pixelCount * bitsPerIndex + 7) / 8;
+			if (bitsPerIndex != 1 && bitsPerIndex != 2 && bitsPerIndex != 4 && bitsPerIndex != 8)
+				throw new InvalidDataException("Invalid palette index bit width.");
+
+			int packedLen = CheckedPackedLength(pixelCount, bitsPerIndex);
 
 			int compLen = Reader.ReadInt32();
-			byte[] compressed = Reader.ReadBytes(compLen);
+			byte[] compressed = ApfReadHelpers.ReadBytesExact(Reader, compLen, "palette index data");
 			byte[] delta = Helpers.Decompress(compressed, packedLen);
 			byte[] packed = Helpers.DeltaDecode(delta);
 			byte[] indices = bitsPerIndex == 8 ? packed : Helpers.UnpackBits(packed, bitsPerIndex, pixelCount);
 
 			Color[] zPixels = new Color[pixelCount];
 			for (int i = 0; i < pixelCount; i++)
+			{
+				if (indices[i] >= paletteCount)
+					throw new InvalidDataException("Palette index is outside the palette.");
 				zPixels[i] = palette[indices[i]];
+			}
 
 			int[] zOrder = Helpers.GenerateZOrderIndices(Descriptor.Width, Descriptor.Height);
 			ReorderPixelsFromZOrder(zOrder, zPixels);
@@ -935,19 +952,30 @@ namespace ArbitraryPictureFormat
 		void DecodeColorSorted(BinaryReader Reader, int pixelCount)
 		{
 			int uniqueCount = Reader.ReadInt32();
+			ApfReadHelpers.ValidateCount(uniqueCount, "unique color", pixelCount);
 
 			int[] colors = new int[uniqueCount];
 			for (int i = 0; i < uniqueCount; i++)
 				colors[i] = Reader.ReadInt32();
 
 			int[] counts = new int[uniqueCount];
+			long totalCount = 0;
 			for (int i = 0; i < uniqueCount; i++)
+			{
 				counts[i] = Reader.ReadInt32();
+				ApfReadHelpers.ValidateCount(counts[i], "color run", pixelCount);
+				totalCount += counts[i];
+			}
+			if (totalCount != pixelCount)
+				throw new InvalidDataException("Color-sorted counts do not match the image pixel count.");
 
 			byte posWidth = Reader.ReadByte();
+			if (posWidth != 1 && posWidth != 2 && posWidth != 4)
+				throw new InvalidDataException("Invalid color-sorted position width.");
+
 			int compLen = Reader.ReadInt32();
-			byte[] compressed = Reader.ReadBytes(compLen);
-			byte[] posBytes = Helpers.Decompress(compressed, pixelCount * posWidth);
+			byte[] compressed = ApfReadHelpers.ReadBytesExact(Reader, compLen, "color-sorted positions");
+			byte[] posBytes = Helpers.Decompress(compressed, checked(pixelCount * posWidth));
 			int[] positionDeltas = Helpers.BytesToInts(posBytes, posWidth);
 
 			ImageData = new Color[pixelCount];
@@ -962,6 +990,8 @@ namespace ArbitraryPictureFormat
 						pos = positionDeltas[di++];
 					else
 						pos += positionDeltas[di++];
+					if (pos < 0 || pos >= pixelCount)
+						throw new InvalidDataException("Color-sorted pixel position is outside the image.");
 					ImageData[pos] = color;
 				}
 			}
@@ -1002,6 +1032,7 @@ namespace ArbitraryPictureFormat
 		void DecodePaethFullGrid(BinaryReader Reader, int pixelCount)
 		{
 			int w = Descriptor.Width, h = Descriptor.Height;
+			int total = ApfReadHelpers.CheckedElementCount(w, h);
 			byte channelFlags = Reader.ReadByte();
 			bool hasR = (channelFlags & 1) != 0;
 			bool hasG = (channelFlags & 2) != 0;
@@ -1009,7 +1040,7 @@ namespace ArbitraryPictureFormat
 			bool hasA = (channelFlags & 8) != 0;
 			bool isMono = (channelFlags & 16) != 0;
 
-			byte[] rPlane = hasR ? ReadPaethPlane(Reader, w, h) : FillPlane(w * h, Reader.ReadByte());
+			byte[] rPlane = hasR ? ReadPaethPlane(Reader, w, h) : FillPlane(total, Reader.ReadByte());
 			byte[] gPlane, bPlane;
 			if (isMono)
 			{
@@ -1018,10 +1049,10 @@ namespace ArbitraryPictureFormat
 			}
 			else
 			{
-				gPlane = hasG ? ReadPaethPlane(Reader, w, h) : FillPlane(w * h, Reader.ReadByte());
-				bPlane = hasB ? ReadPaethPlane(Reader, w, h) : FillPlane(w * h, Reader.ReadByte());
+				gPlane = hasG ? ReadPaethPlane(Reader, w, h) : FillPlane(total, Reader.ReadByte());
+				bPlane = hasB ? ReadPaethPlane(Reader, w, h) : FillPlane(total, Reader.ReadByte());
 			}
-			byte[] aPlane = hasA ? ReadPaethPlane(Reader, w, h) : FillPlane(w * h, Reader.ReadByte());
+			byte[] aPlane = hasA ? ReadPaethPlane(Reader, w, h) : FillPlane(total, Reader.ReadByte());
 
 			int count = Descriptor.GetCount();
 			ImageData = new Color[count];
@@ -1037,9 +1068,19 @@ namespace ArbitraryPictureFormat
 
 		static byte[] FillPlane(int count, byte val)
 		{
+			ApfReadHelpers.ValidateLength(count, "plane");
 			byte[] plane = new byte[count];
 			for (int i = 0; i < count; i++) plane[i] = val;
 			return plane;
+		}
+
+		static int CheckedPackedLength(int count, byte bitsPerIndex)
+		{
+			long totalBits = (long)count * bitsPerIndex;
+			long packedLength = (totalBits + 7) / 8;
+			if (packedLength > ApfReadHelpers.MaxByteArrayLength)
+				throw new InvalidDataException("Packed index data is too large.");
+			return (int)packedLength;
 		}
 	}
 
@@ -1130,23 +1171,32 @@ namespace ArbitraryPictureFormat
 		{
 			Width = Reader.ReadInt32();
 			Height = Reader.ReadInt32();
+			int total = ApfReadHelpers.CheckedElementCount(Width, Height);
 
 			int rawLen = Reader.ReadInt32();
 			int compLen = Reader.ReadInt32();
+			ApfReadHelpers.ValidateLength(rawLen, "shape stencil");
+			ApfReadHelpers.ValidateLength(compLen, "compressed shape stencil");
 
 			if (rawLen == 0 && compLen == 0)
 			{
-				Data = new BitArray(Width * Height);
+				Data = new BitArray(total);
 				Data.SetAll(true);
 				return;
 			}
 
-			byte[] compressed = Reader.ReadBytes(compLen);
+			int expectedRawLen = (total + 7) / 8;
+			if (rawLen != expectedRawLen)
+				throw new InvalidDataException("Shape stencil length does not match image dimensions.");
+			if (compLen == 0)
+				throw new InvalidDataException("Compressed shape stencil cannot be empty.");
+
+			byte[] compressed = ApfReadHelpers.ReadBytesExact(Reader, compLen, "shape stencil");
 			byte[] raw = Helpers.Decompress(compressed, rawLen);
 
 			BitArray zData = raw.ToBitArray();
 			int[] zOrder = Helpers.GenerateZOrderIndices(Width, Height);
-			Data = new BitArray(Width * Height);
+			Data = new BitArray(total);
 			for (int i = 0; i < zOrder.Length; i++)
 				Data[zOrder[i]] = zData[i];
 		}
@@ -1248,6 +1298,7 @@ namespace ArbitraryPictureFormat
 
 		public static byte[] RleDecode(byte[] data, int decodedLength)
 		{
+			ValidateDecodedLength(decodedLength);
 			byte[] result = new byte[decodedLength];
 			int ri = 0, di = 0;
 
@@ -1258,6 +1309,8 @@ namespace ArbitraryPictureFormat
 				if ((header & 0x80) != 0)
 				{
 					int count = (header & 0x7F) + 2;
+					if (di >= data.Length)
+						throw new InvalidDataException("Truncated RLE run.");
 					byte val = data[di++];
 					for (int j = 0; j < count && ri < decodedLength; j++)
 						result[ri++] = val;
@@ -1265,10 +1318,17 @@ namespace ArbitraryPictureFormat
 				else
 				{
 					int count = (header & 0x7F) + 1;
+					if (data.Length - di < count)
+						throw new InvalidDataException("Truncated RLE literal run.");
 					for (int j = 0; j < count && ri < decodedLength; j++)
 						result[ri++] = data[di++];
 				}
 			}
+
+			if (ri != decodedLength)
+				throw new InvalidDataException("RLE stream ended before the expected decoded length.");
+			if (di != data.Length)
+				throw new InvalidDataException("RLE stream has trailing data.");
 
 			return result;
 		}
@@ -1566,6 +1626,7 @@ namespace ArbitraryPictureFormat
 
 		public static byte[] Lz77Decode(byte[] data, int decodedLength)
 		{
+			ValidateDecodedLength(decodedLength);
 			byte[] result = new byte[decodedLength];
 			int ri = 0, di = 0;
 
@@ -1576,8 +1637,12 @@ namespace ArbitraryPictureFormat
 				if ((header & 0x80) != 0)
 				{
 					int len = (header & 0x7F) + LZ_MIN_MATCH;
+					if (data.Length - di < 2)
+						throw new InvalidDataException("Truncated LZ77 match.");
 					int dist = data[di] | (data[di + 1] << 8);
 					di += 2;
+					if (dist <= 0 || dist > ri)
+						throw new InvalidDataException("Invalid LZ77 match distance.");
 					int srcPos = ri - dist;
 					for (int j = 0; j < len && ri < decodedLength; j++)
 						result[ri++] = result[srcPos + j];
@@ -1585,10 +1650,17 @@ namespace ArbitraryPictureFormat
 				else
 				{
 					int len = (header & 0x7F) + 1;
+					if (data.Length - di < len)
+						throw new InvalidDataException("Truncated LZ77 literal run.");
 					for (int j = 0; j < len && ri < decodedLength; j++)
 						result[ri++] = data[di++];
 				}
 			}
+
+			if (ri != decodedLength)
+				throw new InvalidDataException("LZ77 stream ended before the expected decoded length.");
+			if (di != data.Length)
+				throw new InvalidDataException("LZ77 stream has trailing data.");
 
 			return result;
 		}
@@ -1717,24 +1789,40 @@ namespace ArbitraryPictureFormat
 
 		public static byte[] RansDecode(byte[] data, int decodedLength)
 		{
-			if (data.Length == 0 || decodedLength == 0) return new byte[decodedLength];
+			ValidateDecodedLength(decodedLength);
+			if (decodedLength == 0)
+				return new byte[0];
+			if (data.Length < 6)
+				throw new InvalidDataException("Truncated rANS stream.");
 
 			int pos = 0;
 
 			// Read frequency table
 			int numSymbols = data[pos] | (data[pos + 1] << 8);
 			pos += 2;
+			if (numSymbols <= 0 || numSymbols > 256)
+				throw new InvalidDataException("Invalid rANS symbol count.");
+			if (data.Length - pos < numSymbols * 3 + 4)
+				throw new InvalidDataException("Truncated rANS frequency table.");
 
 			int[] freq = new int[256];
 			int[] cumFreq = new int[257];
+			int totalFrequency = 0;
 
 			for (int i = 0; i < numSymbols; i++)
 			{
 				byte sym = data[pos++];
 				int f = data[pos] | (data[pos + 1] << 8);
 				pos += 2;
+				if (f <= 0)
+					throw new InvalidDataException("Invalid rANS symbol frequency.");
+				if (freq[sym] != 0)
+					throw new InvalidDataException("Duplicate rANS symbol frequency.");
 				freq[sym] = f;
+				totalFrequency += f;
 			}
+			if (totalFrequency != RANS_SCALE)
+				throw new InvalidDataException("rANS frequencies do not match the coding scale.");
 
 			for (int i = 0; i < 256; i++)
 				cumFreq[i + 1] = cumFreq[i] + freq[i];
@@ -1756,6 +1844,8 @@ namespace ArbitraryPictureFormat
 			{
 				uint cumVal = state & (uint)(RANS_SCALE - 1);
 				byte s = cumToSym[cumVal];
+				if (freq[s] == 0)
+					throw new InvalidDataException("Invalid rANS cumulative frequency.");
 				result[i] = s;
 
 				// Advance state: state = freq[s] * (state >> SCALE) + (cumVal - cumFreq[s])
@@ -1764,6 +1854,8 @@ namespace ArbitraryPictureFormat
 				// Renormalize
 				while (state < RANS_LOWER && pos < data.Length)
 					state = (state << 8) | data[pos++];
+				if (state < RANS_LOWER && pos >= data.Length && i + 1 < decodedLength)
+					throw new InvalidDataException("Truncated rANS payload.");
 			}
 
 			return result;
@@ -1817,7 +1909,13 @@ namespace ArbitraryPictureFormat
 
 		public static byte[] Decompress(byte[] data, int decodedLength)
 		{
-			if (data.Length == 0) return new byte[decodedLength];
+			ValidateDecodedLength(decodedLength);
+			if (data.Length == 0)
+			{
+				if (decodedLength == 0)
+					return new byte[0];
+				throw new InvalidDataException("Compressed stream is empty.");
+			}
 			byte mode = data[0];
 			byte[] payload = new byte[data.Length - 1];
 			Buffer.BlockCopy(data, 1, payload, 0, payload.Length);
@@ -1828,14 +1926,22 @@ namespace ArbitraryPictureFormat
 				case 1: return Lz77Decode(payload, decodedLength);
 				case 2: return RansDecode(payload, decodedLength);
 				case 3:
+					if (payload.Length < 4)
+						throw new InvalidDataException("Truncated LZ77+rANS stream.");
 					int lzLen = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+					ValidateDecodedLength(lzLen);
 					byte[] ransPayload = new byte[payload.Length - 4];
 					Buffer.BlockCopy(payload, 4, ransPayload, 0, ransPayload.Length);
 					byte[] lz = RansDecode(ransPayload, lzLen);
 					return Lz77Decode(lz, decodedLength);
 				default:
-					return RleDecode(payload, decodedLength);
+					throw new InvalidDataException("Unknown compression mode: " + mode);
 			}
+		}
+
+		static void ValidateDecodedLength(int decodedLength)
+		{
+			ApfReadHelpers.ValidateLength(decodedLength, "decoded stream");
 		}
 	}
 }

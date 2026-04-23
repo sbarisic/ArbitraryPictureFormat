@@ -61,7 +61,8 @@ namespace ArbitraryPictureFormat {
 						PrintInfo(input);
 					} else {
 						output ??= Path.Combine(dir, name + ".png");
-						DecodeApf(input, output, stencil, layer);
+						if (!DecodeApf(input, output, stencil, layer))
+							return 1;
 					}
 				} else {
 					output ??= Path.Combine(dir, name + ".apf");
@@ -88,7 +89,7 @@ namespace ArbitraryPictureFormat {
 			Console.WriteLine("→ {0}  ({1:N0} → {2:N0} bytes, {3:F2}×)", output, inSize, outSize, ratio);
 		}
 
-		static void DecodeApf(string input, string output, bool stencil, string layer) {
+		static bool DecodeApf(string input, string output, bool stencil, string layer) {
 			Console.WriteLine("  {0}", input);
 			ApfFile file = ApfFile.FromFile(input);
 
@@ -99,7 +100,7 @@ namespace ArbitraryPictureFormat {
 			ApfImage image = file.GetImage(layer);
 			if (image == null) {
 				Console.Error.WriteLine("Error: no image found" + (layer != null ? $" with name '{layer}'" : ""));
-				return;
+				return false;
 			}
 
 			if (!string.IsNullOrEmpty(image.Name))
@@ -117,6 +118,8 @@ namespace ArbitraryPictureFormat {
 					sbmp.Save(stencilPath, ImageFormat.Png);
 				Console.WriteLine("→ {0}  (stencil)", stencilPath);
 			}
+
+			return true;
 		}
 
 		static void PrintInfo(string input) {

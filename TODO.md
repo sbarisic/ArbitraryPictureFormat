@@ -83,8 +83,6 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### Active Bugs
 
-- [ ] [HIGH] [CPX: 2] Fix named layer lookup so `apf input.apf -l missing` fails instead of silently falling back to the first image, and return a non-zero CLI exit code on decode errors.
-- [ ] [HIGH] [CPX: 3] Add length, count, dimension, and read-completion validation throughout C# APF deserialization before allocating arrays or trusting `ReadBytes` results.
 - [ ] [HIGH] [CPX: 4] Harden the C decoder against malformed files: negative dimensions, integer overflow, truncated rANS/LZ77 streams, invalid palette indices, and oversized allocations.
 - [ ] [HIGH] [CPX: 3] Preserve Paint.NET APF metadata when layers are renamed or have duplicate names; the current layer-name keying can collide or detach metadata.
 - [ ] [MEDIUM] [CPX: 1] Add `PaethChannelPlanes` to the Paint.NET save encoding strategy dropdown so all seven encoder modes are selectable.
@@ -100,7 +98,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ## Notes
 
-- Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 16 tests.
+- Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 25 tests.
 - Treat the binary format as compatibility-sensitive: add fixtures before changing serialized bytes, headers, compression mode selection, or metadata layout.
 - Keep the C decoder dependency-free and portable C99; viewer-only dependencies such as Raylib should stay outside `apf.c` and `apf.h`.
 - Prefer adding tests before codec changes, especially when touching rANS, LZ77, stencil/Z-order mapping, or Paeth channel-plane reconstruction.
@@ -127,4 +125,5 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### Fixed Bugs
 
-*No fixed bugs tracked in this TODO yet*
+- [x] Fixed named layer lookup so missing `-l` selections fail instead of falling back to the first image, with a non-zero CLI exit code on decode failure.
+- [x] Added C# APF deserialization validation for malformed lengths, counts, dimensions, truncated reads, and underfilled compressed streams.

@@ -6,6 +6,60 @@ using System.Text;
 
 namespace ArbitraryPictureFormat
 {
+	internal static class ApfReadHelpers
+	{
+		public const int MaxByteArrayLength = 256 * 1024 * 1024;
+		public const int MaxStringByteLength = 1024 * 1024;
+		public const int MaxMetadataEntries = 65536;
+		public const int MaxImages = 65536;
+		public const int MaxDimension = 1_000_000;
+		public const int MaxPixels = 268_435_456;
+
+		public static byte[] ReadBytesExact(BinaryReader reader, int count, string fieldName)
+		{
+			ValidateLength(count, fieldName);
+			byte[] bytes = reader.ReadBytes(count);
+			if (bytes.Length != count)
+				throw new InvalidDataException($"Unexpected end of file while reading {fieldName}.");
+			return bytes;
+		}
+
+		public static string ReadUtf8String(BinaryReader reader, int byteLength, string fieldName)
+		{
+			ValidateLength(byteLength, fieldName, MaxStringByteLength);
+			return Encoding.UTF8.GetString(ReadBytesExact(reader, byteLength, fieldName));
+		}
+
+		public static void ValidateLength(int length, string fieldName, int maxLength = MaxByteArrayLength)
+		{
+			if (length < 0)
+				throw new InvalidDataException($"{fieldName} length cannot be negative.");
+			if (length > maxLength)
+				throw new InvalidDataException($"{fieldName} length is too large.");
+		}
+
+		public static void ValidateCount(int count, string fieldName, int maxCount)
+		{
+			if (count < 0)
+				throw new InvalidDataException($"{fieldName} count cannot be negative.");
+			if (count > maxCount)
+				throw new InvalidDataException($"{fieldName} count is too large.");
+		}
+
+		public static int CheckedElementCount(int width, int height)
+		{
+			if (width <= 0 || height <= 0)
+				throw new InvalidDataException("Image dimensions must be positive.");
+			if (width > MaxDimension || height > MaxDimension)
+				throw new InvalidDataException("Image dimensions are too large.");
+
+			long total = (long)width * height;
+			if (total > MaxPixels)
+				throw new InvalidDataException("Image dimensions contain too many pixels.");
+			return (int)total;
+		}
+	}
+
 	public class ApfFile
 	{
 		const byte VERSION_1_0 = 0x10;
@@ -33,8 +87,7 @@ namespace ArbitraryPictureFormat
 			if (string.IsNullOrEmpty(name))
 				return Images.Count > 0 ? Images[0] : null;
 
-			return Images.FirstOrDefault(i => i.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-				?? (Images.Count > 0 ? Images[0] : null);
+			return Images.FirstOrDefault(i => i.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 		}
 
 		public void Serialize(Stream S, PixelEncoding? forcedEncoding = null)
@@ -108,11 +161,12 @@ namespace ArbitraryPictureFormat
 					case VERSION_2_0:
 					{
 						int imageCount = Reader.ReadInt32();
+						ApfReadHelpers.ValidateCount(imageCount, "image", ApfReadHelpers.MaxImages);
 						for (int i = 0; i < imageCount; i++)
 						{
 							int nameLen = Reader.ReadInt32();
 							string name = nameLen > 0
-								? Encoding.UTF8.GetString(Reader.ReadBytes(nameLen))
+								? ApfReadHelpers.ReadUtf8String(Reader, nameLen, "image name")
 								: "";
 
 							byte subVersion = Reader.ReadByte();
@@ -167,14 +221,15 @@ namespace ArbitraryPictureFormat
 		static Dictionary<string, string> ReadMetadata(BinaryReader reader)
 		{
 			int count = reader.ReadInt32();
+			ApfReadHelpers.ValidateCount(count, "metadata entry", ApfReadHelpers.MaxMetadataEntries);
 			var metadata = new Dictionary<string, string>(count);
 			for (int i = 0; i < count; i++)
 			{
 				int keyLen = reader.ReadInt32();
-				string key = Encoding.UTF8.GetString(reader.ReadBytes(keyLen));
+				string key = ApfReadHelpers.ReadUtf8String(reader, keyLen, "metadata key");
 
 				int valLen = reader.ReadInt32();
-				string value = Encoding.UTF8.GetString(reader.ReadBytes(valLen));
+				string value = ApfReadHelpers.ReadUtf8String(reader, valLen, "metadata value");
 
 				metadata[key] = value;
 			}

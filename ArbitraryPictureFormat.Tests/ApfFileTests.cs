@@ -183,7 +183,7 @@ public class ApfFileTests
 		Assert.Equal("normal", file.GetImage("normal").Name);
 		Assert.Equal("diffuse", file.GetImage("").Name); // default → first
 		Assert.Equal("diffuse", file.GetImage(null).Name); // null → first
-		Assert.Equal("diffuse", file.GetImage("nonexistent").Name); // fallback → first
+		Assert.Null(file.GetImage("nonexistent"));
 	}
 
 	[Fact]
