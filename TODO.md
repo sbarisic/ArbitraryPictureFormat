@@ -83,10 +83,6 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### Active Bugs
 
-- [ ] [MEDIUM] [CPX: 1] Add `PaethChannelPlanes` to the Paint.NET save encoding strategy dropdown so all seven encoder modes are selectable.
-- [ ] [MEDIUM] [CPX: 1] Replace `_strdup` in `viewer/apf.c` with a portable helper so the C99 decoder builds under non-MSVC compilers.
-- [ ] [MEDIUM] [CPX: 2] Decide whether empty `ApfFile` instances are valid; either reject serialization with a clear exception or fully support zero-image APF files across CLI and C decoder.
-- [ ] [MEDIUM] [CPX: 2] Clarify or update `ArbitraryPicture.FromFile`; it currently only accepts v1.0 payload files even though APF container support includes v1.1 and v2.0.
 
 ### Uncategorized
 
@@ -129,3 +125,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 - [x] Added C# APF deserialization validation for malformed lengths, counts, dimensions, truncated reads, and underfilled compressed streams.
 - [x] Hardened the C decoder against malformed dimensions, integer overflow, truncated RLE/LZ77/rANS streams, invalid palette/color indices, and oversized allocations.
 - [x] Preserved Paint.NET APF metadata across layer renames and duplicate layer names by keying the plugin metadata bridge by layer index with legacy name fallback.
+- [x] Added `PaethChannelPlanes` to the Paint.NET save encoding strategy dropdown so all seven encoder modes are selectable.
+- [x] Replaced `_strdup` in `viewer/apf.c` with a portable helper so the decoder no longer depends on the MSVC-specific CRT entry point.
+- [x] Rejected zero-image APF files with clear .NET serialization/deserialization errors and matching C decoder rejection.
+- [x] Updated `ArbitraryPicture.FromFile` to load any single-image APF container and to reject multi-image files with a clear error directing callers to `ApfFile.FromFile`.

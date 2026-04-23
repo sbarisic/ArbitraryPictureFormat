@@ -31,8 +31,10 @@ namespace ArbitraryPictureFormat
 
 		public static ArbitraryPicture FromFile(string FilePath)
 		{
-			using (FileStream FS = File.OpenRead(FilePath))
-				return new ArbitraryPicture(FS);
+			ApfFile file = ApfFile.FromFile(FilePath);
+			if (file.Images.Count != 1)
+				throw new InvalidDataException("ArbitraryPicture.FromFile only supports APF files with exactly one image. Use ApfFile.FromFile for multi-image files.");
+			return file.Images[0].Picture;
 		}
 
 		public ArbitraryPicture(ShapeDesc Descriptor, Color Background)

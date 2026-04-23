@@ -20,6 +20,21 @@ public class DeserializationValidationTests
 	}
 
 	[Fact]
+	public void Deserialize_RejectsZeroImageCount()
+	{
+		using var ms = new MemoryStream();
+		using (var writer = new BinaryWriter(ms, System.Text.Encoding.UTF8, leaveOpen: true))
+		{
+			writer.Write((byte)0x20);
+			writer.Write(0);
+		}
+
+		ms.Position = 0;
+		var ex = Assert.Throws<InvalidDataException>(() => ApfFile.Deserialize(ms));
+		Assert.Equal("APF file contains no images.", ex.Message);
+	}
+
+	[Fact]
 	public void Deserialize_RejectsNegativeMetadataCount()
 	{
 		using var ms = new MemoryStream();

@@ -142,6 +142,16 @@ public class ApfFileTests
 	}
 
 	[Fact]
+	public void Serialize_RejectsEmptyFile()
+	{
+		var file = new ApfFile();
+		using var ms = new MemoryStream();
+
+		var ex = Assert.Throws<InvalidOperationException>(() => file.Serialize(ms));
+		Assert.Equal("APF files must contain at least one image.", ex.Message);
+	}
+
+	[Fact]
 	public void V10_Compat_ExistingFiles_LoadThroughApfFile()
 	{
 		// Existing v1.0 files produced by ArbitraryPicture.Save should load through ApfFile
@@ -184,6 +194,70 @@ public class ApfFileTests
 		Assert.Equal("diffuse", file.GetImage("").Name); // default → first
 		Assert.Equal("diffuse", file.GetImage(null).Name); // null → first
 		Assert.Null(file.GetImage("nonexistent"));
+	}
+
+	[Fact]
+	public void ArbitraryPictureFromFile_LoadsSingleImageContainer()
+	{
+		var pixels = new Color[]
+		{
+			Color.FromArgb(255, 10, 20, 30),
+			Color.FromArgb(255, 40, 50, 60),
+			Color.FromArgb(255, 70, 80, 90),
+			Color.FromArgb(255, 100, 110, 120)
+		};
+		var pic = new ArbitraryPicture(2, 2, pixels);
+		var file = ApfFile.FromSingleImage(pic, "only", new Dictionary<string, string> { ["kind"] = "single" });
+
+		using var ms = new MemoryStream();
+		file.Serialize(ms);
+		ms.Position = 0;
+
+		string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".apf");
+		try
+		{
+			File.WriteAllBytes(path, ms.ToArray());
+			ArbitraryPicture loaded = ArbitraryPicture.FromFile(path);
+
+			Assert.Equal(pic.Descriptor.Width, loaded.Descriptor.Width);
+			Assert.Equal(pic.Descriptor.Height, loaded.Descriptor.Height);
+			Assert.Equal(pic.Background, loaded.Background);
+			Assert.Equal(pic.ImageData, loaded.ImageData);
+		}
+		finally
+		{
+			if (File.Exists(path))
+				File.Delete(path);
+		}
+	}
+
+	[Fact]
+	public void ArbitraryPictureFromFile_RejectsMultiImageContainer()
+	{
+		var pixels = new Color[] { Color.Red, Color.Blue, Color.Green, Color.White };
+		var pic1 = new ArbitraryPicture(2, 2, pixels);
+		var pic2 = new ArbitraryPicture(2, 2, pixels);
+
+		var file = new ApfFile();
+		file.Images.Add(new ApfImage(pic1, "a"));
+		file.Images.Add(new ApfImage(pic2, "b"));
+
+		using var ms = new MemoryStream();
+		file.Serialize(ms);
+		ms.Position = 0;
+
+		string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".apf");
+		try
+		{
+			File.WriteAllBytes(path, ms.ToArray());
+			var ex = Assert.Throws<InvalidDataException>(() => ArbitraryPicture.FromFile(path));
+			Assert.Equal("ArbitraryPicture.FromFile only supports APF files with exactly one image. Use ApfFile.FromFile for multi-image files.", ex.Message);
+		}
+		finally
+		{
+			if (File.Exists(path))
+				File.Delete(path);
+		}
 	}
 
 	[Fact]

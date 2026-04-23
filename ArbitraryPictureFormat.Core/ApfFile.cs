@@ -92,6 +92,9 @@ namespace ArbitraryPictureFormat
 
 		public void Serialize(Stream S, PixelEncoding? forcedEncoding = null)
 		{
+			if (Images.Count == 0)
+				throw new InvalidOperationException("APF files must contain at least one image.");
+
 			using (BinaryWriter Writer = new BinaryWriter(S, Encoding.UTF8, true))
 			{
 				if (Images.Count == 1 && !Images[0].HasMetadata)
@@ -162,6 +165,8 @@ namespace ArbitraryPictureFormat
 					{
 						int imageCount = Reader.ReadInt32();
 						ApfReadHelpers.ValidateCount(imageCount, "image", ApfReadHelpers.MaxImages);
+						if (imageCount == 0)
+							throw new InvalidDataException("APF file contains no images.");
 						for (int i = 0; i < imageCount; i++)
 						{
 							int nameLen = Reader.ReadInt32();

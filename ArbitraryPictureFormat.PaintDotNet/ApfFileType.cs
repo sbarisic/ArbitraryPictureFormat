@@ -25,7 +25,8 @@ public class ApfFileType : PropertyBasedFileType
 		"ColorSorted",
 		"SolidFill",
 		"MonoAlpha",
-		"PaethFullGrid"
+		"PaethFullGrid",
+		"PaethChannelPlanes"
 	];
 
 	public ApfFileType()

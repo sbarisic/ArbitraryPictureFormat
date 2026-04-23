@@ -99,6 +99,18 @@ static int read_bytes(Reader *r, uint8_t *buf, int len) {
     return 1;
 }
 
+static char *apf_strdup(const char *s) {
+    size_t len;
+    char *copy;
+    if (!s) return NULL;
+    len = strlen(s);
+    if (len > (size_t)APF_MAX_STRING_BYTES) return NULL;
+    copy = (char *)apf_malloc_array(len + 1, 1);
+    if (!copy) return NULL;
+    memcpy(copy, s, len + 1);
+    return copy;
+}
+
 /* ---------- ARGB (file) -> RGBA (output) conversion ---------- */
 
 static uint32_t argb_to_rgba(int32_t argb) {
@@ -1155,7 +1167,7 @@ ApfFile *apf_load_file(const char *path) {
             apf->image_count = 1;
             apf->images = (ApfImage *)apf_calloc_array(1, sizeof(ApfImage));
             if (!apf->images) goto fail;
-            apf->images[0].name = _strdup("");
+            apf->images[0].name = apf_strdup("");
             if (!apf->images[0].name) goto fail;
             if (!decode_payload(&reader, &apf->images[0])) goto fail;
             break;
@@ -1165,7 +1177,7 @@ ApfFile *apf_load_file(const char *path) {
             apf->image_count = 1;
             apf->images = (ApfImage *)apf_calloc_array(1, sizeof(ApfImage));
             if (!apf->images) goto fail;
-            apf->images[0].name = _strdup("");
+            apf->images[0].name = apf_strdup("");
             if (!apf->images[0].name) goto fail;
             if (!read_metadata(&reader, &apf->images[0].metadata)) goto fail;
             if (!decode_payload(&reader, &apf->images[0])) goto fail;
@@ -1175,6 +1187,10 @@ ApfFile *apf_load_file(const char *path) {
         case 0x20: { /* v2.0: multi-image container */
             int32_t image_count;
             if (!read_i32(&reader, &image_count) || !checked_count(image_count, APF_MAX_IMAGES)) goto fail;
+            if (image_count == 0) {
+                fprintf(stderr, "apf: file contains no images\n");
+                goto fail;
+            }
 
             apf->image_count = image_count;
             apf->images = (ApfImage *)apf_calloc_array((size_t)image_count, sizeof(ApfImage));
