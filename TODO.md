@@ -83,8 +83,6 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### Active Bugs
 
-- [ ] [HIGH] [CPX: 4] Harden the C decoder against malformed files: negative dimensions, integer overflow, truncated rANS/LZ77 streams, invalid palette indices, and oversized allocations.
-- [ ] [HIGH] [CPX: 3] Preserve Paint.NET APF metadata when layers are renamed or have duplicate names; the current layer-name keying can collide or detach metadata.
 - [ ] [MEDIUM] [CPX: 1] Add `PaethChannelPlanes` to the Paint.NET save encoding strategy dropdown so all seven encoder modes are selectable.
 - [ ] [MEDIUM] [CPX: 1] Replace `_strdup` in `viewer/apf.c` with a portable helper so the C99 decoder builds under non-MSVC compilers.
 - [ ] [MEDIUM] [CPX: 2] Decide whether empty `ApfFile` instances are valid; either reject serialization with a clear exception or fully support zero-image APF files across CLI and C decoder.
@@ -99,6 +97,8 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 ## Notes
 
 - Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 25 tests.
+- C viewer build baseline: `cmake --build viewer\build --config Debug --target apf_viewer` succeeds.
+- Paint.NET plugin build baseline: both plugin projects build successfully, with existing Paint.NET reference warnings.
 - Treat the binary format as compatibility-sensitive: add fixtures before changing serialized bytes, headers, compression mode selection, or metadata layout.
 - Keep the C decoder dependency-free and portable C99; viewer-only dependencies such as Raylib should stay outside `apf.c` and `apf.h`.
 - Prefer adding tests before codec changes, especially when touching rANS, LZ77, stencil/Z-order mapping, or Paeth channel-plane reconstruction.
@@ -127,3 +127,5 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 - [x] Fixed named layer lookup so missing `-l` selections fail instead of falling back to the first image, with a non-zero CLI exit code on decode failure.
 - [x] Added C# APF deserialization validation for malformed lengths, counts, dimensions, truncated reads, and underfilled compressed streams.
+- [x] Hardened the C decoder against malformed dimensions, integer overflow, truncated RLE/LZ77/rANS streams, invalid palette/color indices, and oversized allocations.
+- [x] Preserved Paint.NET APF metadata across layer renames and duplicate layer names by keying the plugin metadata bridge by layer index with legacy name fallback.

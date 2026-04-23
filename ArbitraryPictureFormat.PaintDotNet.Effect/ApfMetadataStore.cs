@@ -83,10 +83,27 @@ internal static class ApfMetadataStore
 		return new Dictionary<string, string>();
 	}
 
+	public static Dictionary<string, string> GetLayer(int layerIndex, string fallbackLayerName)
+	{
+		var all = ReadAll();
+		if (layerIndex >= 0 && all.TryGetValue(GetLayerKey(layerIndex), out var meta))
+			return new Dictionary<string, string>(meta);
+		if (all.TryGetValue(fallbackLayerName ?? "", out meta))
+			return new Dictionary<string, string>(meta);
+		return new Dictionary<string, string>();
+	}
+
 	public static void SetLayer(string layerName, Dictionary<string, string> metadata)
 	{
 		var all = ReadAll();
 		all[layerName ?? ""] = metadata != null ? new Dictionary<string, string>(metadata) : new();
+		WriteAll(all);
+	}
+
+	public static void SetLayer(int layerIndex, Dictionary<string, string> metadata)
+	{
+		var all = ReadAll();
+		all[GetLayerKey(layerIndex)] = metadata != null ? new Dictionary<string, string>(metadata) : new();
 		WriteAll(all);
 	}
 
@@ -98,12 +115,28 @@ internal static class ApfMetadataStore
 	public static string Serialize(string layerName)
 	{
 		var meta = GetLayer(layerName);
+		return SerializeMetadata(meta);
+	}
+
+	public static string Serialize(int layerIndex, string fallbackLayerName)
+	{
+		var meta = GetLayer(layerIndex, fallbackLayerName);
+		return SerializeMetadata(meta);
+	}
+
+	private static string SerializeMetadata(Dictionary<string, string> meta)
+	{
 		if (meta.Count == 0)
 			return "";
 		var sb = new StringBuilder();
 		foreach (var kvp in meta)
 			sb.AppendLine($"{kvp.Key}={kvp.Value}");
 		return sb.ToString().TrimEnd();
+	}
+
+	private static string GetLayerKey(int layerIndex)
+	{
+		return layerIndex >= 0 ? "index:" + layerIndex.ToString() : "";
 	}
 
 	public static Dictionary<string, string> Parse(string text)

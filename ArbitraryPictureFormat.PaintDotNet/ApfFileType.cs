@@ -54,6 +54,7 @@ public class ApfFileType : PropertyBasedFileType
 
 		ApfMetadataStore.Clear();
 
+		int layerIndex = 0;
 		foreach (ApfImage apfImage in apfFile.Images)
 		{
 			var layer = new BitmapLayer(canvasW, canvasH);
@@ -61,9 +62,7 @@ public class ApfFileType : PropertyBasedFileType
 			if (!string.IsNullOrEmpty(apfImage.Name))
 				layer.Name = apfImage.Name;
 
-			// Store metadata keyed by the actual layer name (which may be
-			// a Paint.NET default like "Background" if the APF name was empty)
-			ApfMetadataStore.SetLayer(layer.Name,
+			ApfMetadataStore.SetLayer(layerIndex,
 				apfImage.HasMetadata ? apfImage.Metadata : new Dictionary<string, string>());
 
 			Surface surface = layer.Surface;
@@ -90,6 +89,7 @@ public class ApfFileType : PropertyBasedFileType
 			}
 
 			doc.Layers.Add(layer);
+			layerIndex++;
 		}
 
 		return doc;
@@ -128,10 +128,14 @@ public class ApfFileType : PropertyBasedFileType
 
 		var apfFile = new ApfFile();
 
+		int layerIndex = 0;
 		foreach (Layer layer in input.Layers)
 		{
 			if (layer is not BitmapLayer bitmapLayer)
+			{
+				layerIndex++;
 				continue;
+			}
 
 			Surface layerSurface = bitmapLayer.Surface;
 			int width = layerSurface.Width;
@@ -150,8 +154,9 @@ public class ApfFileType : PropertyBasedFileType
 			var pic = new ArbitraryPicture(width, height, pixels);
 			string name = layer.Name ?? "";
 
-			var layerMeta = ApfMetadataStore.GetLayer(name);
+			var layerMeta = ApfMetadataStore.GetLayer(layerIndex, name);
 			apfFile.Images.Add(new ApfImage(pic, name, layerMeta.Count > 0 ? layerMeta : null));
+			layerIndex++;
 		}
 
 		apfFile.Serialize(output, forced);

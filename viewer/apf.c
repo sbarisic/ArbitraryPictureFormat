@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 /* ---------- low-level read helpers ---------- */
 
@@ -11,6 +12,60 @@ typedef struct {
     size_t size;
     size_t pos;
 } Reader;
+
+#define APF_MAX_BYTES (256 * 1024 * 1024)
+#define APF_MAX_STRING_BYTES (1024 * 1024)
+#define APF_MAX_IMAGES 65536
+#define APF_MAX_METADATA_ENTRIES 65536
+#define APF_MAX_DIMENSION 1000000
+#define APF_MAX_PIXELS 268435456
+
+static int checked_len(int len) {
+    return len >= 0 && len <= APF_MAX_BYTES;
+}
+
+static int checked_count(int count, int max_count) {
+    return count >= 0 && count <= max_count;
+}
+
+static int checked_total_pixels(int width, int height, int *total) {
+    long long v;
+    if (width <= 0 || height <= 0) return 0;
+    if (width > APF_MAX_DIMENSION || height > APF_MAX_DIMENSION) return 0;
+    v = (long long)width * (long long)height;
+    if (v > APF_MAX_PIXELS || v > INT_MAX) return 0;
+    *total = (int)v;
+    return 1;
+}
+
+static int checked_mul_int(int a, int b, int *out) {
+    long long v;
+    if (a < 0 || b < 0) return 0;
+    v = (long long)a * (long long)b;
+    if (v > INT_MAX || v > APF_MAX_BYTES) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+static int checked_byte_count_for_bits(int bit_count, int *byte_count) {
+    if (bit_count < 0 || bit_count > APF_MAX_PIXELS) return 0;
+    *byte_count = (bit_count + 7) / 8;
+    return 1;
+}
+
+static void *apf_malloc_array(size_t count, size_t elem_size) {
+    if (elem_size != 0 && count > SIZE_MAX / elem_size) return NULL;
+    if (count * elem_size > (size_t)APF_MAX_BYTES) return NULL;
+    if (count == 0 || elem_size == 0) count = 1, elem_size = 1;
+    return malloc(count * elem_size);
+}
+
+static void *apf_calloc_array(size_t count, size_t elem_size) {
+    if (elem_size != 0 && count > SIZE_MAX / elem_size) return NULL;
+    if (count * elem_size > (size_t)APF_MAX_BYTES) return NULL;
+    if (count == 0 || elem_size == 0) count = 1, elem_size = 1;
+    return calloc(count, elem_size);
+}
 
 static int read_u8(Reader *r, uint8_t *out) {
     if (r->pos >= r->size) return 0;
@@ -37,7 +92,8 @@ static int read_u16(Reader *r, uint16_t *out) {
 }
 
 static int read_bytes(Reader *r, uint8_t *buf, int len) {
-    if (r->pos + (size_t)len > r->size) return 0;
+    if (!checked_len(len)) return 0;
+    if ((size_t)len > r->size - r->pos) return 0;
     memcpy(buf, r->data + r->pos, len);
     r->pos += len;
     return 1;
@@ -56,7 +112,9 @@ static uint32_t argb_to_rgba(int32_t argb) {
 /* ---------- RLE decode ---------- */
 
 static uint8_t *rle_decode(const uint8_t *data, int data_len, int decoded_len) {
-    uint8_t *result = (uint8_t *)calloc(decoded_len, 1);
+    uint8_t *result;
+    if (!checked_len(data_len) || !checked_len(decoded_len)) return NULL;
+    result = (uint8_t *)apf_calloc_array((size_t)decoded_len, 1);
     if (!result) return NULL;
     int ri = 0, di = 0;
 
@@ -64,22 +122,27 @@ static uint8_t *rle_decode(const uint8_t *data, int data_len, int decoded_len) {
         uint8_t header = data[di++];
         if (header & 0x80) {
             int count = (header & 0x7F) + 2;
+            if (di >= data_len) { free(result); return NULL; }
             uint8_t val = data[di++];
             for (int j = 0; j < count && ri < decoded_len; j++)
                 result[ri++] = val;
         } else {
             int count = (header & 0x7F) + 1;
+            if (data_len - di < count) { free(result); return NULL; }
             for (int j = 0; j < count && ri < decoded_len; j++)
                 result[ri++] = data[di++];
         }
     }
+    if (ri != decoded_len || di != data_len) { free(result); return NULL; }
     return result;
 }
 
 /* ---------- LZ77 decode ---------- */
 
 static uint8_t *lz77_decode(const uint8_t *data, int data_len, int decoded_len) {
-    uint8_t *result = (uint8_t *)calloc(decoded_len, 1);
+    uint8_t *result;
+    if (!checked_len(data_len) || !checked_len(decoded_len)) return NULL;
+    result = (uint8_t *)apf_calloc_array((size_t)decoded_len, 1);
     if (!result) return NULL;
     int ri = 0, di = 0;
 
@@ -87,17 +150,21 @@ static uint8_t *lz77_decode(const uint8_t *data, int data_len, int decoded_len) 
         uint8_t header = data[di++];
         if (header & 0x80) {
             int len = (header & 0x7F) + 3;
+            if (data_len - di < 2) { free(result); return NULL; }
             int dist = data[di] | (data[di+1] << 8);
             di += 2;
+            if (dist <= 0 || dist > ri) { free(result); return NULL; }
             int src = ri - dist;
             for (int j = 0; j < len && ri < decoded_len; j++)
                 result[ri++] = result[src + j];
         } else {
             int len = (header & 0x7F) + 1;
+            if (data_len - di < len) { free(result); return NULL; }
             for (int j = 0; j < len && ri < decoded_len; j++)
                 result[ri++] = data[di++];
         }
     }
+    if (ri != decoded_len || di != data_len) { free(result); return NULL; }
     return result;
 }
 
@@ -108,10 +175,12 @@ static uint8_t *lz77_decode(const uint8_t *data, int data_len, int decoded_len) 
 #define RANS_LOWER (1u << 23)
 
 static uint8_t *rans_decode(const uint8_t *data, int data_len, int decoded_len) {
-    if (data_len == 0 || decoded_len == 0)
-        return (uint8_t *)calloc(decoded_len > 0 ? decoded_len : 1, 1);
+    if (!checked_len(data_len) || !checked_len(decoded_len)) return NULL;
+    if (decoded_len == 0)
+        return (uint8_t *)apf_calloc_array(1, 1);
+    if (data_len < 6) return NULL;
 
-    uint8_t *result = (uint8_t *)malloc(decoded_len);
+    uint8_t *result = (uint8_t *)apf_malloc_array((size_t)decoded_len, 1);
     if (!result) return NULL;
 
     int pos = 0;
@@ -119,25 +188,34 @@ static uint8_t *rans_decode(const uint8_t *data, int data_len, int decoded_len) 
     /* Read frequency table */
     int num_symbols = data[pos] | (data[pos + 1] << 8);
     pos += 2;
+    if (num_symbols <= 0 || num_symbols > 256) { free(result); return NULL; }
+    if (data_len - pos < num_symbols * 3 + 4) { free(result); return NULL; }
 
     int freq[256] = {0};
     int cum_freq[257] = {0};
+    int total_freq = 0;
 
-    for (int i = 0; i < num_symbols && pos + 2 < data_len; i++) {
+    for (int i = 0; i < num_symbols; i++) {
         uint8_t sym = data[pos++];
         int f = data[pos] | (data[pos + 1] << 8);
         pos += 2;
+        if (f <= 0 || freq[sym] != 0) { free(result); return NULL; }
         freq[sym] = f;
+        total_freq += f;
     }
+    if (total_freq != RANS_SCALE) { free(result); return NULL; }
 
     for (int i = 0; i < 256; i++)
         cum_freq[i + 1] = cum_freq[i] + freq[i];
 
     /* Reverse lookup table: cumulative freq -> symbol */
     uint8_t cum_to_sym[RANS_SCALE];
+    memset(cum_to_sym, 0, sizeof(cum_to_sym));
     for (int s = 0; s < 256; s++)
-        for (int j = cum_freq[s]; j < cum_freq[s + 1]; j++)
+        for (int j = cum_freq[s]; j < cum_freq[s + 1]; j++) {
+            if (j < 0 || j >= RANS_SCALE) { free(result); return NULL; }
             cum_to_sym[j] = (uint8_t)s;
+        }
 
     /* Read initial state */
     uint32_t state = (uint32_t)data[pos]
@@ -150,6 +228,7 @@ static uint8_t *rans_decode(const uint8_t *data, int data_len, int decoded_len) 
     for (int i = 0; i < decoded_len; i++) {
         uint32_t slot = state & (RANS_SCALE - 1);
         uint8_t sym = cum_to_sym[slot];
+        if (freq[sym] == 0) { free(result); return NULL; }
         result[i] = sym;
 
         int fs = freq[sym];
@@ -160,6 +239,10 @@ static uint8_t *rans_decode(const uint8_t *data, int data_len, int decoded_len) 
         /* Renormalize: read bytes until state >= RANS_LOWER */
         while (state < RANS_LOWER && pos < data_len)
             state = (state << 8) | data[pos++];
+        if (state < RANS_LOWER && pos >= data_len && i + 1 < decoded_len) {
+            free(result);
+            return NULL;
+        }
     }
 
     return result;
@@ -168,7 +251,11 @@ static uint8_t *rans_decode(const uint8_t *data, int data_len, int decoded_len) 
 /* ---------- Decompress (mode byte + RLE / LZ77 / rANS / LZ77+rANS) ---------- */
 
 static uint8_t *decompress(const uint8_t *data, int data_len, int decoded_len) {
-    if (data_len == 0) return (uint8_t *)calloc(decoded_len, 1);
+    if (!checked_len(data_len) || !checked_len(decoded_len)) return NULL;
+    if (data_len == 0) {
+        if (decoded_len == 0) return (uint8_t *)apf_calloc_array(1, 1);
+        return NULL;
+    }
     uint8_t mode = data[0];
     const uint8_t *payload = data + 1;
     int payload_len = data_len - 1;
@@ -178,22 +265,24 @@ static uint8_t *decompress(const uint8_t *data, int data_len, int decoded_len) {
         case 1: return lz77_decode(payload, payload_len, decoded_len);
         case 2: return rans_decode(payload, payload_len, decoded_len);
         case 3: {
+            if (payload_len < 4) return NULL;
             int lz_len = payload[0] | (payload[1] << 8) | (payload[2] << 16) | (payload[3] << 24);
+            if (!checked_len(lz_len)) return NULL;
             uint8_t *lz = rans_decode(payload + 4, payload_len - 4, lz_len);
             if (!lz) return NULL;
             uint8_t *result = lz77_decode(lz, lz_len, decoded_len);
             free(lz);
             return result;
         }
-        default: return rle_decode(payload, payload_len, decoded_len);
+        default: return NULL;
     }
 }
 
 /* Read compressed blob: int32 len + bytes -> decompress */
 static uint8_t *read_compressed(Reader *r, int decoded_len) {
     int32_t comp_len;
-    if (!read_i32(r, &comp_len) || comp_len < 0) return NULL;
-    uint8_t *comp = (uint8_t *)malloc(comp_len);
+    if (!read_i32(r, &comp_len) || !checked_len(comp_len)) return NULL;
+    uint8_t *comp = (uint8_t *)apf_malloc_array((size_t)comp_len, 1);
     if (!comp) return NULL;
     if (!read_bytes(r, comp, comp_len)) { free(comp); return NULL; }
     uint8_t *result = decompress(comp, comp_len, decoded_len);
@@ -219,7 +308,13 @@ static uint8_t *read_compressed_plane(Reader *r, int pixel_count) {
 /* ---------- Bit unpacking ---------- */
 
 static uint8_t *unpack_bits(const uint8_t *packed, uint8_t bits_per_value, int count) {
-    uint8_t *result = (uint8_t *)malloc(count);
+    uint8_t *result;
+    int bit_count;
+    int packed_len;
+    if (!(bits_per_value == 1 || bits_per_value == 2 || bits_per_value == 4 || bits_per_value == 8)) return NULL;
+    if (!checked_mul_int(count, bits_per_value, &bit_count)) return NULL;
+    if (!checked_byte_count_for_bits(bit_count, &packed_len)) return NULL;
+    result = (uint8_t *)apf_malloc_array((size_t)count, 1);
     if (!result) return NULL;
     uint8_t mask = (uint8_t)((1 << bits_per_value) - 1);
     int bit_pos = 0;
@@ -227,9 +322,12 @@ static uint8_t *unpack_bits(const uint8_t *packed, uint8_t bits_per_value, int c
     for (int i = 0; i < count; i++) {
         int byte_idx = bit_pos / 8;
         int bit_offset = bit_pos % 8;
+        if (byte_idx >= packed_len) { free(result); return NULL; }
         int val = packed[byte_idx] >> bit_offset;
-        if (bit_offset + bits_per_value > 8)
+        if (bit_offset + bits_per_value > 8) {
+            if (byte_idx + 1 >= packed_len) { free(result); return NULL; }
             val |= packed[byte_idx + 1] << (8 - bit_offset);
+        }
         result[i] = (uint8_t)(val & mask);
         bit_pos += bits_per_value;
     }
@@ -249,8 +347,9 @@ static uint8_t paeth_predict(uint8_t a, uint8_t b, uint8_t c) {
 }
 
 static uint8_t *paeth_decode(const uint8_t *residuals, int w, int h) {
-    int total = w * h;
-    uint8_t *result = (uint8_t *)malloc(total);
+    int total;
+    if (!checked_total_pixels(w, h, &total)) return NULL;
+    uint8_t *result = (uint8_t *)apf_malloc_array((size_t)total, 1);
     if (!result) return NULL;
 
     for (int y = 0; y < h; y++) {
@@ -267,7 +366,9 @@ static uint8_t *paeth_decode(const uint8_t *residuals, int w, int h) {
 
 /* Read Paeth-compressed plane: compressed -> decompress -> paeth_decode */
 static uint8_t *read_paeth_plane(Reader *r, int w, int h) {
-    uint8_t *residuals = read_compressed(r, w * h);
+    int total;
+    if (!checked_total_pixels(w, h, &total)) return NULL;
+    uint8_t *residuals = read_compressed(r, total);
     if (!residuals) return NULL;
     uint8_t *plane = paeth_decode(residuals, w, h);
     free(residuals);
@@ -290,9 +391,10 @@ static uint32_t morton_encode(uint32_t x, uint32_t y) {
 
 /* Returns array where result[i] = scanline index of the i-th pixel in Z-order */
 static int *generate_z_order_indices(int width, int height) {
-    int total = width * height;
-    int *indices = (int *)malloc(total * sizeof(int));
-    uint32_t *codes = (uint32_t *)malloc(total * sizeof(uint32_t));
+    int total;
+    if (!checked_total_pixels(width, height, &total)) return NULL;
+    int *indices = (int *)apf_malloc_array((size_t)total, sizeof(int));
+    uint32_t *codes = (uint32_t *)apf_malloc_array((size_t)total, sizeof(uint32_t));
     if (!indices || !codes) { free(indices); free(codes); return NULL; }
 
     for (int y = 0; y < height; y++) {
@@ -324,8 +426,9 @@ static int *generate_z_order_indices(int width, int height) {
 /* Reorder Z-order pixels back to scanline-order ImageData */
 static uint32_t *reorder_from_z_order(int *z_order, uint32_t *z_pixels, int pixel_count,
                                        uint8_t *stencil_bits, int total_pixels) {
+    if (!z_order || !z_pixels || !stencil_bits) return NULL;
     /* Build scan-to-image index map */
-    int *scan_to_img = (int *)malloc(total_pixels * sizeof(int));
+    int *scan_to_img = (int *)apf_malloc_array((size_t)total_pixels, sizeof(int));
     if (!scan_to_img) return NULL;
     int img_idx = 0;
     for (int i = 0; i < total_pixels; i++) {
@@ -337,15 +440,20 @@ static uint32_t *reorder_from_z_order(int *z_order, uint32_t *z_pixels, int pixe
             scan_to_img[i] = -1;
     }
 
-    uint32_t *image_data = (uint32_t *)calloc(pixel_count, sizeof(uint32_t));
+    if (img_idx != pixel_count) { free(scan_to_img); return NULL; }
+
+    uint32_t *image_data = (uint32_t *)apf_calloc_array((size_t)pixel_count, sizeof(uint32_t));
     if (!image_data) { free(scan_to_img); return NULL; }
 
     int zi = 0;
     for (int i = 0; i < total_pixels; i++) {
         int si = scan_to_img[z_order[i]];
-        if (si >= 0)
+        if (si >= 0) {
+            if (zi >= pixel_count) { free(image_data); free(scan_to_img); return NULL; }
             image_data[si] = z_pixels[zi++];
+        }
     }
+    if (zi != pixel_count) { free(image_data); free(scan_to_img); return NULL; }
 
     free(scan_to_img);
     return image_data;
@@ -354,7 +462,8 @@ static uint32_t *reorder_from_z_order(int *z_order, uint32_t *z_pixels, int pixe
 /* ---------- Fill plane helper ---------- */
 
 static uint8_t *fill_plane(int count, uint8_t val) {
-    uint8_t *p = (uint8_t *)malloc(count);
+    if (!checked_len(count)) return NULL;
+    uint8_t *p = (uint8_t *)apf_malloc_array((size_t)count, 1);
     if (p) memset(p, val, count);
     return p;
 }
@@ -362,7 +471,8 @@ static uint8_t *fill_plane(int count, uint8_t val) {
 /* ---------- Variable-width int decode ---------- */
 
 static int *bytes_to_ints(const uint8_t *data, uint8_t width, int count) {
-    int *result = (int *)malloc(count * sizeof(int));
+    if (!(width == 1 || width == 2 || width == 4)) return NULL;
+    int *result = (int *)apf_malloc_array((size_t)count, sizeof(int));
     if (!result) return NULL;
     for (int i = 0; i < count; i++) {
         int off = i * width;
@@ -389,7 +499,8 @@ static int stencil_get(const Stencil *s, int x, int y) {
 }
 
 static int stencil_count(const Stencil *s) {
-    int total = s->width * s->height;
+    int total;
+    if (!checked_total_pixels(s->width, s->height, &total)) return -1;
     int count = 0;
     for (int i = 0; i < total; i++)
         if ((s->bits[i/8] >> (i%8)) & 1) count++;
@@ -405,9 +516,13 @@ static int decode_stencil(Reader *r, Stencil *s) {
     int32_t raw_len, comp_len;
     if (!read_i32(r, &raw_len) || !read_i32(r, &comp_len)) return 0;
 
-    int total = w * h;
-    int byte_count = (total + 7) / 8;
-    s->bits = (uint8_t *)malloc(byte_count);
+    int total;
+    int byte_count;
+    if (!checked_total_pixels(w, h, &total)) return 0;
+    if (!checked_byte_count_for_bits(total, &byte_count)) return 0;
+    if (!checked_len(raw_len) || !checked_len(comp_len)) return 0;
+
+    s->bits = (uint8_t *)apf_malloc_array((size_t)byte_count, 1);
     if (!s->bits) return 0;
 
     if (raw_len == 0 && comp_len == 0) {
@@ -420,18 +535,20 @@ static int decode_stencil(Reader *r, Stencil *s) {
         return 1;
     }
 
+    if (raw_len != byte_count || comp_len <= 0) { free(s->bits); s->bits = NULL; return 0; }
+
     /* Read compressed Z-ordered stencil */
-    uint8_t *comp = (uint8_t *)malloc(comp_len);
-    if (!comp) return 0;
-    if (!read_bytes(r, comp, comp_len)) { free(comp); return 0; }
+    uint8_t *comp = (uint8_t *)apf_malloc_array((size_t)comp_len, 1);
+    if (!comp) { free(s->bits); s->bits = NULL; return 0; }
+    if (!read_bytes(r, comp, comp_len)) { free(comp); free(s->bits); s->bits = NULL; return 0; }
 
     uint8_t *z_bits = decompress(comp, comp_len, raw_len);
     free(comp);
-    if (!z_bits) return 0;
+    if (!z_bits) { free(s->bits); s->bits = NULL; return 0; }
 
     /* Generate Z-order and reorder back to scanline */
     int *z_order = generate_z_order_indices(w, h);
-    if (!z_order) { free(z_bits); return 0; }
+    if (!z_order) { free(z_bits); free(s->bits); s->bits = NULL; return 0; }
 
     memset(s->bits, 0, byte_count);
     for (int i = 0; i < total; i++) {
@@ -481,7 +598,7 @@ static uint32_t *decode_channel_planes(Reader *r, int pixel_count, Stencil *sten
         goto fail;
 
     /* Build z-ordered RGBA pixels */
-    uint32_t *z_pixels = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
+    uint32_t *z_pixels = (uint32_t *)apf_malloc_array((size_t)pixel_count, sizeof(uint32_t));
     if (!z_pixels) goto fail;
 
     for (int i = 0; i < pixel_count; i++) {
@@ -491,7 +608,8 @@ static uint32_t *decode_channel_planes(Reader *r, int pixel_count, Stencil *sten
                      | ((uint32_t)a_plane[i] << 24);
     }
 
-    int total = stencil->width * stencil->height;
+    int total;
+    if (!checked_total_pixels(stencil->width, stencil->height, &total)) { free(z_pixels); goto fail; }
     int *z_order = generate_z_order_indices(stencil->width, stencil->height);
     uint32_t *result = reorder_from_z_order(z_order, z_pixels, pixel_count, stencil->bits, total);
 
@@ -517,8 +635,9 @@ fail:
 static uint32_t *decode_palette_indexed(Reader *r, int pixel_count, Stencil *stencil) {
     uint16_t palette_count;
     if (!read_u16(r, &palette_count)) return NULL;
+    if (palette_count == 0 || palette_count > 256) return NULL;
 
-    uint32_t *palette = (uint32_t *)malloc(palette_count * sizeof(uint32_t));
+    uint32_t *palette = (uint32_t *)apf_malloc_array((size_t)palette_count, sizeof(uint32_t));
     if (!palette) return NULL;
     for (int i = 0; i < palette_count; i++) {
         int32_t argb;
@@ -528,8 +647,22 @@ static uint32_t *decode_palette_indexed(Reader *r, int pixel_count, Stencil *ste
 
     uint8_t bits_per_index;
     if (!read_u8(r, &bits_per_index)) { free(palette); return NULL; }
+    if (!(bits_per_index == 1 || bits_per_index == 2 || bits_per_index == 4 || bits_per_index == 8)) {
+        free(palette);
+        return NULL;
+    }
 
-    int packed_len = (bits_per_index == 8) ? pixel_count : (pixel_count * bits_per_index + 7) / 8;
+    int packed_len;
+    if (bits_per_index == 8) {
+        packed_len = pixel_count;
+    } else {
+        int bit_count;
+        if (!checked_mul_int(pixel_count, bits_per_index, &bit_count) ||
+            !checked_byte_count_for_bits(bit_count, &packed_len)) {
+            free(palette);
+            return NULL;
+        }
+    }
 
     /* Read compressed delta packed indices */
     uint8_t *delta = read_compressed(r, packed_len);
@@ -546,15 +679,18 @@ static uint32_t *decode_palette_indexed(Reader *r, int pixel_count, Stencil *ste
     }
 
     /* Build z-ordered RGBA pixels */
-    uint32_t *z_pixels = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
+    uint32_t *z_pixels = (uint32_t *)apf_malloc_array((size_t)pixel_count, sizeof(uint32_t));
     if (!z_pixels) { free(indices); free(palette); return NULL; }
-    for (int i = 0; i < pixel_count; i++)
+    for (int i = 0; i < pixel_count; i++) {
+        if (indices[i] >= palette_count) { free(z_pixels); free(indices); free(palette); return NULL; }
         z_pixels[i] = palette[indices[i]];
+    }
 
     free(indices);
     free(palette);
 
-    int total = stencil->width * stencil->height;
+    int total;
+    if (!checked_total_pixels(stencil->width, stencil->height, &total)) { free(z_pixels); return NULL; }
     int *z_order = generate_z_order_indices(stencil->width, stencil->height);
     uint32_t *result = reorder_from_z_order(z_order, z_pixels, pixel_count, stencil->bits, total);
     free(z_order);
@@ -567,27 +703,36 @@ static uint32_t *decode_palette_indexed(Reader *r, int pixel_count, Stencil *ste
 static uint32_t *decode_color_sorted(Reader *r, int pixel_count) {
     int32_t unique_count;
     if (!read_i32(r, &unique_count)) return NULL;
+    if (!checked_count(unique_count, pixel_count)) return NULL;
 
-    int32_t *colors = (int32_t *)malloc(unique_count * sizeof(int32_t));
-    int32_t *counts = (int32_t *)malloc(unique_count * sizeof(int32_t));
+    int32_t *colors = (int32_t *)apf_malloc_array((size_t)unique_count, sizeof(int32_t));
+    int32_t *counts = (int32_t *)apf_malloc_array((size_t)unique_count, sizeof(int32_t));
     if (!colors || !counts) { free(colors); free(counts); return NULL; }
 
     for (int i = 0; i < unique_count; i++)
         if (!read_i32(r, &colors[i])) { free(colors); free(counts); return NULL; }
-    for (int i = 0; i < unique_count; i++)
+    long long total_count = 0;
+    for (int i = 0; i < unique_count; i++) {
         if (!read_i32(r, &counts[i])) { free(colors); free(counts); return NULL; }
+        if (!checked_count(counts[i], pixel_count)) { free(colors); free(counts); return NULL; }
+        total_count += counts[i];
+    }
+    if (total_count != pixel_count) { free(colors); free(counts); return NULL; }
 
     uint8_t pos_width;
     if (!read_u8(r, &pos_width)) { free(colors); free(counts); return NULL; }
+    if (!(pos_width == 1 || pos_width == 2 || pos_width == 4)) { free(colors); free(counts); return NULL; }
 
-    uint8_t *pos_bytes = read_compressed(r, pixel_count * pos_width);
+    int pos_bytes_len;
+    if (!checked_mul_int(pixel_count, pos_width, &pos_bytes_len)) { free(colors); free(counts); return NULL; }
+    uint8_t *pos_bytes = read_compressed(r, pos_bytes_len);
     if (!pos_bytes) { free(colors); free(counts); return NULL; }
 
     int *pos_deltas = bytes_to_ints(pos_bytes, pos_width, pixel_count);
     free(pos_bytes);
     if (!pos_deltas) { free(colors); free(counts); return NULL; }
 
-    uint32_t *image_data = (uint32_t *)calloc(pixel_count, sizeof(uint32_t));
+    uint32_t *image_data = (uint32_t *)apf_calloc_array((size_t)pixel_count, sizeof(uint32_t));
     if (!image_data) { free(colors); free(counts); free(pos_deltas); return NULL; }
 
     int di = 0;
@@ -599,10 +744,13 @@ static uint32_t *decode_color_sorted(Reader *r, int pixel_count) {
                 pos = pos_deltas[di++];
             else
                 pos += pos_deltas[di++];
-            if (pos >= 0 && pos < pixel_count)
-                image_data[pos] = rgba;
+            if (pos < 0 || pos >= pixel_count) {
+                free(image_data); free(colors); free(counts); free(pos_deltas); return NULL;
+            }
+            image_data[pos] = rgba;
         }
     }
+    if (di != pixel_count) { free(image_data); free(colors); free(counts); free(pos_deltas); return NULL; }
 
     free(colors);
     free(counts);
@@ -616,7 +764,7 @@ static uint32_t *decode_solid_fill(Reader *r, int pixel_count) {
     int32_t argb;
     if (!read_i32(r, &argb)) return NULL;
     uint32_t rgba = argb_to_rgba(argb);
-    uint32_t *data = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
+    uint32_t *data = (uint32_t *)apf_malloc_array((size_t)pixel_count, sizeof(uint32_t));
     if (!data) return NULL;
     for (int i = 0; i < pixel_count; i++)
         data[i] = rgba;
@@ -642,7 +790,7 @@ static uint32_t *decode_mono_alpha(Reader *r, int pixel_count, Stencil *stencil)
     }
     if (!alpha) { free(luma); return NULL; }
 
-    uint32_t *z_pixels = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
+    uint32_t *z_pixels = (uint32_t *)apf_malloc_array((size_t)pixel_count, sizeof(uint32_t));
     if (!z_pixels) { free(luma); free(alpha); return NULL; }
     for (int i = 0; i < pixel_count; i++) {
         uint8_t l = luma[i];
@@ -651,7 +799,8 @@ static uint32_t *decode_mono_alpha(Reader *r, int pixel_count, Stencil *stencil)
     free(luma);
     free(alpha);
 
-    int total = stencil->width * stencil->height;
+    int total;
+    if (!checked_total_pixels(stencil->width, stencil->height, &total)) { free(z_pixels); return NULL; }
     int *z_order = generate_z_order_indices(stencil->width, stencil->height);
     uint32_t *result = reorder_from_z_order(z_order, z_pixels, pixel_count, stencil->bits, total);
     free(z_order);
@@ -663,6 +812,8 @@ static uint32_t *decode_mono_alpha(Reader *r, int pixel_count, Stencil *stencil)
 
 static uint32_t *decode_paeth_full_grid(Reader *r, int pixel_count, Stencil *stencil) {
     int w = stencil->width, h = stencil->height;
+    int total;
+    if (!checked_total_pixels(w, h, &total)) return NULL;
 
     uint8_t channel_flags;
     if (!read_u8(r, &channel_flags)) return NULL;
@@ -672,14 +823,14 @@ static uint32_t *decode_paeth_full_grid(Reader *r, int pixel_count, Stencil *ste
     int has_a = channel_flags & 8;
     int is_mono = channel_flags & 16;
 
-    uint8_t *r_plane, *g_plane, *b_plane, *a_plane;
+    uint8_t *r_plane = NULL, *g_plane = NULL, *b_plane = NULL, *a_plane = NULL;
     uint8_t val;
 
     if (has_r)
         r_plane = read_paeth_plane(r, w, h);
     else {
         if (!read_u8(r, &val)) return NULL;
-        r_plane = fill_plane(w * h, val);
+        r_plane = fill_plane(total, val);
     }
     if (!r_plane) return NULL;
 
@@ -691,13 +842,13 @@ static uint32_t *decode_paeth_full_grid(Reader *r, int pixel_count, Stencil *ste
             g_plane = read_paeth_plane(r, w, h);
         else {
             if (!read_u8(r, &val)) { free(r_plane); return NULL; }
-            g_plane = fill_plane(w * h, val);
+            g_plane = fill_plane(total, val);
         }
         if (has_b)
             b_plane = read_paeth_plane(r, w, h);
         else {
             if (!read_u8(r, &val)) { free(r_plane); free(g_plane); return NULL; }
-            b_plane = fill_plane(w * h, val);
+            b_plane = fill_plane(total, val);
         }
     }
 
@@ -705,12 +856,12 @@ static uint32_t *decode_paeth_full_grid(Reader *r, int pixel_count, Stencil *ste
         a_plane = read_paeth_plane(r, w, h);
     else {
         if (!read_u8(r, &val)) goto paeth_fail;
-        a_plane = fill_plane(w * h, val);
+        a_plane = fill_plane(total, val);
     }
     if (!a_plane) goto paeth_fail;
 
     {
-        uint32_t *image_data = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
+        uint32_t *image_data = (uint32_t *)apf_malloc_array((size_t)pixel_count, sizeof(uint32_t));
         if (!image_data) goto paeth_fail;
 
         int idx = 0;
@@ -725,6 +876,7 @@ static uint32_t *decode_paeth_full_grid(Reader *r, int pixel_count, Stencil *ste
                 }
             }
         }
+        if (idx != pixel_count) { free(image_data); goto paeth_fail; }
 
         if (!is_mono) { free(g_plane); free(b_plane); }
         free(r_plane);
@@ -747,8 +899,9 @@ static uint8_t *read_paeth_channel_plane(Reader *r, int w, int h, int pixel_coun
     uint8_t *stencil_residuals = read_compressed(r, pixel_count);
     if (!stencil_residuals) return NULL;
 
-    int total = w * h;
-    uint8_t *result = (uint8_t *)malloc(total);
+    int total;
+    if (!checked_total_pixels(w, h, &total)) { free(stencil_residuals); return NULL; }
+    uint8_t *result = (uint8_t *)apf_malloc_array((size_t)total, 1);
     if (!result) { free(stencil_residuals); return NULL; }
 
     int si = 0;
@@ -767,6 +920,7 @@ static uint8_t *read_paeth_channel_plane(Reader *r, int w, int h, int pixel_coun
         }
     }
 
+    if (si != pixel_count) { free(result); free(stencil_residuals); return NULL; }
     free(stencil_residuals);
     return result;
 }
@@ -774,6 +928,8 @@ static uint8_t *read_paeth_channel_plane(Reader *r, int w, int h, int pixel_coun
 static uint32_t *decode_paeth_channel_planes(Reader *r, int pixel_count, Stencil *stencil,
                                               int32_t bg_argb) {
     int w = stencil->width, h = stencil->height;
+    int total;
+    if (!checked_total_pixels(w, h, &total)) return NULL;
 
     uint8_t bg_r = (uint8_t)((bg_argb >> 16) & 0xFF);
     uint8_t bg_g = (uint8_t)((bg_argb >> 8) & 0xFF);
@@ -788,14 +944,14 @@ static uint32_t *decode_paeth_channel_planes(Reader *r, int pixel_count, Stencil
     int has_a = channel_flags & 8;
     int is_mono = channel_flags & 16;
 
-    uint8_t *r_plane, *g_plane, *b_plane, *a_plane;
+    uint8_t *r_plane = NULL, *g_plane = NULL, *b_plane = NULL, *a_plane = NULL;
     uint8_t val;
 
     if (has_r)
         r_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_r, stencil);
     else {
         if (!read_u8(r, &val)) return NULL;
-        r_plane = fill_plane(w * h, val);
+        r_plane = fill_plane(total, val);
     }
     if (!r_plane) return NULL;
 
@@ -807,13 +963,13 @@ static uint32_t *decode_paeth_channel_planes(Reader *r, int pixel_count, Stencil
             g_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_g, stencil);
         else {
             if (!read_u8(r, &val)) { free(r_plane); return NULL; }
-            g_plane = fill_plane(w * h, val);
+            g_plane = fill_plane(total, val);
         }
         if (has_b)
             b_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_b, stencil);
         else {
             if (!read_u8(r, &val)) { free(r_plane); free(g_plane); return NULL; }
-            b_plane = fill_plane(w * h, val);
+            b_plane = fill_plane(total, val);
         }
     }
 
@@ -821,12 +977,12 @@ static uint32_t *decode_paeth_channel_planes(Reader *r, int pixel_count, Stencil
         a_plane = read_paeth_channel_plane(r, w, h, pixel_count, bg_a, stencil);
     else {
         if (!read_u8(r, &val)) goto pcp_fail;
-        a_plane = fill_plane(w * h, val);
+        a_plane = fill_plane(total, val);
     }
     if (!a_plane) goto pcp_fail;
 
     {
-        uint32_t *image_data = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
+        uint32_t *image_data = (uint32_t *)apf_malloc_array((size_t)pixel_count, sizeof(uint32_t));
         if (!image_data) goto pcp_fail;
 
         int idx = 0;
@@ -841,6 +997,7 @@ static uint32_t *decode_paeth_channel_planes(Reader *r, int pixel_count, Stencil
                 }
             }
         }
+        if (idx != pixel_count) { free(image_data); goto pcp_fail; }
 
         if (!is_mono) { free(g_plane); free(b_plane); }
         free(r_plane);
@@ -859,8 +1016,8 @@ pcp_fail:
 
 static char *read_string(Reader *r) {
     int32_t len;
-    if (!read_i32(r, &len) || len < 0) return NULL;
-    char *s = (char *)malloc(len + 1);
+    if (!read_i32(r, &len) || len < 0 || len > APF_MAX_STRING_BYTES) return NULL;
+    char *s = (char *)apf_malloc_array((size_t)len + 1, 1);
     if (!s) return NULL;
     if (len > 0 && !read_bytes(r, (uint8_t *)s, len)) { free(s); return NULL; }
     s[len] = '\0';
@@ -869,12 +1026,14 @@ static char *read_string(Reader *r) {
 
 static int read_metadata(Reader *r, ApfMetadata *meta) {
     int32_t count;
-    if (!read_i32(r, &count) || count < 0) return 0;
-    meta->count = count;
-    if (count == 0) { meta->entries = NULL; return 1; }
+    if (!read_i32(r, &count) || !checked_count(count, APF_MAX_METADATA_ENTRIES)) return 0;
+    meta->count = 0;
+    meta->entries = NULL;
+    if (count == 0) return 1;
 
-    meta->entries = (ApfMetadataEntry *)calloc(count, sizeof(ApfMetadataEntry));
+    meta->entries = (ApfMetadataEntry *)apf_calloc_array((size_t)count, sizeof(ApfMetadataEntry));
     if (!meta->entries) return 0;
+    meta->count = count;
 
     for (int i = 0; i < count; i++) {
         meta->entries[i].key = read_string(r);
@@ -906,6 +1065,15 @@ static int decode_payload(Reader *r, ApfImage *img) {
         free(stencil.bits);
         return 0;
     }
+    int total;
+    int shape_count = stencil_count(&stencil);
+    if (!checked_total_pixels(stencil.width, stencil.height, &total) ||
+        !checked_count(pixel_count, total) ||
+        shape_count < 0 ||
+        pixel_count != shape_count) {
+        free(stencil.bits);
+        return 0;
+    }
     uint32_t bg_rgba = argb_to_rgba(bg_argb);
 
     uint32_t *image_data = NULL;
@@ -925,8 +1093,7 @@ static int decode_payload(Reader *r, ApfImage *img) {
     if (!image_data) { free(stencil.bits); return 0; }
 
     int w = stencil.width, h = stencil.height;
-    int total = w * h;
-    uint32_t *pixels = (uint32_t *)malloc(total * sizeof(uint32_t));
+    uint32_t *pixels = (uint32_t *)apf_malloc_array((size_t)total, sizeof(uint32_t));
     if (!pixels) { free(image_data); free(stencil.bits); return 0; }
 
     int img_idx = 0;
@@ -962,11 +1129,12 @@ ApfFile *apf_load_file(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
 
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
     long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    if (file_size < 0 || file_size > APF_MAX_BYTES) { fclose(f); return NULL; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
 
-    uint8_t *file_data = (uint8_t *)malloc(file_size);
+    uint8_t *file_data = (uint8_t *)apf_malloc_array((size_t)file_size, 1);
     if (!file_data) { fclose(f); return NULL; }
     if ((long)fread(file_data, 1, file_size, f) != file_size) {
         free(file_data); fclose(f); return NULL;
@@ -978,25 +1146,27 @@ ApfFile *apf_load_file(const char *path) {
     uint8_t version;
     if (!read_u8(&reader, &version)) { free(file_data); return NULL; }
 
-    ApfFile *apf = (ApfFile *)calloc(1, sizeof(ApfFile));
+    ApfFile *apf = (ApfFile *)apf_calloc_array(1, sizeof(ApfFile));
     if (!apf) { free(file_data); return NULL; }
     apf->version = version;
 
     switch (version) {
         case 0x10: { /* v1.0: single image, no metadata */
             apf->image_count = 1;
-            apf->images = (ApfImage *)calloc(1, sizeof(ApfImage));
+            apf->images = (ApfImage *)apf_calloc_array(1, sizeof(ApfImage));
             if (!apf->images) goto fail;
             apf->images[0].name = _strdup("");
+            if (!apf->images[0].name) goto fail;
             if (!decode_payload(&reader, &apf->images[0])) goto fail;
             break;
         }
 
         case 0x11: { /* v1.1: single image with metadata */
             apf->image_count = 1;
-            apf->images = (ApfImage *)calloc(1, sizeof(ApfImage));
+            apf->images = (ApfImage *)apf_calloc_array(1, sizeof(ApfImage));
             if (!apf->images) goto fail;
             apf->images[0].name = _strdup("");
+            if (!apf->images[0].name) goto fail;
             if (!read_metadata(&reader, &apf->images[0].metadata)) goto fail;
             if (!decode_payload(&reader, &apf->images[0])) goto fail;
             break;
@@ -1004,10 +1174,10 @@ ApfFile *apf_load_file(const char *path) {
 
         case 0x20: { /* v2.0: multi-image container */
             int32_t image_count;
-            if (!read_i32(&reader, &image_count) || image_count < 0) goto fail;
+            if (!read_i32(&reader, &image_count) || !checked_count(image_count, APF_MAX_IMAGES)) goto fail;
 
             apf->image_count = image_count;
-            apf->images = (ApfImage *)calloc(image_count, sizeof(ApfImage));
+            apf->images = (ApfImage *)apf_calloc_array((size_t)image_count, sizeof(ApfImage));
             if (!apf->images) goto fail;
 
             for (int i = 0; i < image_count; i++) {
