@@ -25,6 +25,20 @@ namespace ArbitraryPictureFormat
 
 	public class ArbitraryPicture
 	{
+		const int BackgroundCandidateLimit = 8;
+
+		readonly struct PayloadCandidate
+		{
+			public PayloadCandidate(PixelEncoding mode, byte[] data)
+			{
+				Mode = mode;
+				Data = data;
+			}
+
+			public PixelEncoding Mode { get; }
+			public byte[] Data { get; }
+		}
+
 		public Color Background;
 		public ShapeDesc Descriptor;
 		public Color[] ImageData;
@@ -47,60 +61,18 @@ namespace ArbitraryPictureFormat
 #if WINDOWS7_0_OR_GREATER
 		public ArbitraryPicture(Image Img)
 		{
-			Descriptor = new ShapeDesc(Img.Width, Img.Height);
-
 			using (Bitmap Bmp = new Bitmap(Img))
 			{
 				BitmapData BmpData = Bmp.LockBits();
-
-				// Find most common color to use as background
-				Dictionary<int, int> colorCounts = new Dictionary<int, int>();
+				Color[] pixels = new Color[Img.Width * Img.Height];
 				for (int y = 0; y < Img.Height; y++)
 				{
 					for (int x = 0; x < Img.Width; x++)
-					{
-						int argb = BmpData.GetPixelArgb(x, y);
-						if (colorCounts.ContainsKey(argb))
-							colorCounts[argb]++;
-						else
-							colorCounts[argb] = 1;
-					}
-				}
-
-				int bestArgb = 0;
-				int bestCount = 0;
-				foreach (var kvp in colorCounts)
-				{
-					if (kvp.Value > bestCount)
-					{
-						bestCount = kvp.Value;
-						bestArgb = kvp.Key;
-					}
-				}
-				Background = Color.FromArgb(bestArgb);
-
-				for (int y = 0; y < Img.Height; y++)
-				{
-					for (int x = 0; x < Img.Width; x++)
-					{
-						Color C = BmpData.GetPixel(x, y);
-						Descriptor.Set(x, y, C != Background);
-					}
-				}
-
-				ImageData = new Color[Descriptor.GetCount()];
-
-				int Idx = 0;
-				for (int y = 0; y < Img.Height; y++)
-				{
-					for (int x = 0; x < Img.Width; x++)
-					{
-						if (Descriptor.Get(x, y))
-							ImageData[Idx++] = BmpData.GetPixel(x, y);
-					}
+						pixels[y * Img.Width + x] = BmpData.GetPixel(x, y);
 				}
 
 				Bmp.UnlockBits(BmpData);
+				InitializeFromPixels(Img.Width, Img.Height, pixels);
 			}
 		}
 #endif
@@ -115,10 +87,19 @@ namespace ArbitraryPictureFormat
 			if (pixels.Length != width * height)
 				throw new ArgumentException("pixels array length must equal width * height");
 
-			Descriptor = new ShapeDesc(width, height);
+			InitializeFromPixels(width, height, pixels);
+		}
 
-			// Find most common color to use as background
-			Dictionary<int, int> colorCounts = new Dictionary<int, int>();
+		void InitializeFromPixels(int width, int height, Color[] pixels)
+		{
+			Dictionary<int, int> colorCounts = CountColors(pixels);
+			Background = ChooseBackgroundColor(width, height, pixels, colorCounts);
+			(Descriptor, ImageData) = BuildStorage(width, height, pixels, Background);
+		}
+
+		static Dictionary<int, int> CountColors(Color[] pixels)
+		{
+			var colorCounts = new Dictionary<int, int>();
 			for (int i = 0; i < pixels.Length; i++)
 			{
 				int argb = pixels[i].ToArgb();
@@ -128,32 +109,112 @@ namespace ArbitraryPictureFormat
 					colorCounts[argb] = 1;
 			}
 
-			int bestArgb = 0;
-			int bestCount = 0;
-			foreach (var kvp in colorCounts)
+			return colorCounts;
+		}
+
+		static Color ChooseBackgroundColor(int width, int height, Color[] pixels, Dictionary<int, int> colorCounts)
+		{
+			if (pixels.Length == 0)
+				return Color.Transparent;
+
+			var candidateArgbs = colorCounts
+				.OrderByDescending(kvp => kvp.Value)
+				.ThenBy(kvp => kvp.Key)
+				.Take(Math.Min(BackgroundCandidateLimit, colorCounts.Count))
+				.Select(kvp => kvp.Key)
+				.ToList();
+
+			if (TryGetUnusedBackgroundArgb(colorCounts, out int unusedArgb))
+				candidateArgbs.Add(unusedArgb);
+
+			long bestSize = long.MaxValue;
+			int bestArgb = candidateArgbs[0];
+			int bestCount = colorCounts.GetValueOrDefault(bestArgb);
+
+			for (int i = 0; i < candidateArgbs.Count; i++)
 			{
-				if (kvp.Value > bestCount)
+				int argb = candidateArgbs[i];
+				long size = EstimateSerializedSize(width, height, pixels, Color.FromArgb(argb));
+				int count = colorCounts.GetValueOrDefault(argb);
+				if (size < bestSize || (size == bestSize && count > bestCount) || (size == bestSize && count == bestCount && argb < bestArgb))
 				{
-					bestCount = kvp.Value;
-					bestArgb = kvp.Key;
+					bestSize = size;
+					bestArgb = argb;
+					bestCount = count;
 				}
 			}
-			Background = Color.FromArgb(bestArgb);
 
+			return Color.FromArgb(bestArgb);
+		}
+
+		static bool TryGetUnusedBackgroundArgb(Dictionary<int, int> colorCounts, out int argb)
+		{
+			int[] preferred = new[]
+			{
+				unchecked((int)0x00000000),
+				unchecked((int)0xFFFFFFFF),
+				unchecked((int)0xFF000000),
+				unchecked((int)0xFFFF00FF),
+				unchecked((int)0xFF00FFFF),
+			};
+
+			for (int i = 0; i < preferred.Length; i++)
+			{
+				if (!colorCounts.ContainsKey(preferred[i]))
+				{
+					argb = preferred[i];
+					return true;
+				}
+			}
+
+			for (int candidate = 0; candidate < int.MaxValue; candidate++)
+			{
+				if (!colorCounts.ContainsKey(candidate))
+				{
+					argb = candidate;
+					return true;
+				}
+			}
+
+			argb = 0;
+			return false;
+		}
+
+		static (ShapeDesc descriptor, Color[] imageData) BuildStorage(int width, int height, Color[] pixels, Color background)
+		{
+			ShapeDesc descriptor = new ShapeDesc(width, height);
+			int shapePixelCount = 0;
 			for (int y = 0; y < height; y++)
 				for (int x = 0; x < width; x++)
 				{
-					Color c = pixels[y * width + x];
-					Descriptor.Set(x, y, c != Background);
+					bool inShape = pixels[y * width + x] != background;
+					descriptor.Set(x, y, inShape);
+					if (inShape)
+						shapePixelCount++;
 				}
 
-			ImageData = new Color[Descriptor.GetCount()];
-
+			Color[] imageData = new Color[shapePixelCount];
 			int idx = 0;
 			for (int y = 0; y < height; y++)
 				for (int x = 0; x < width; x++)
-					if (Descriptor.Get(x, y))
-						ImageData[idx++] = pixels[y * width + x];
+				{
+					Color pixel = pixels[y * width + x];
+					if (pixel != background)
+						imageData[idx++] = pixel;
+				}
+
+			return (descriptor, imageData);
+		}
+
+		static long EstimateSerializedSize(int width, int height, Color[] pixels, Color background)
+		{
+			(ShapeDesc descriptor, Color[] imageData) = BuildStorage(width, height, pixels, background);
+			var picture = new ArbitraryPicture(descriptor, background)
+			{
+				ImageData = imageData
+			};
+			ArbitraryPictureEncodingAnalysis analysis = picture.AnalyzeEncoding();
+			return 1L + analysis.Stencil.SerializedSize + 4 + 4 + analysis.SelectedCandidate.PayloadSize;
 		}
 
 #if WINDOWS7_0_OR_GREATER
@@ -246,109 +307,37 @@ namespace ArbitraryPictureFormat
 
 			int[] zOrder = Helpers.GenerateZOrderIndices(Descriptor.Width, Descriptor.Height);
 			Color[] zPixels = ReorderPixelsToZOrder(zOrder);
+			List<PayloadCandidate> candidates = BuildPayloadCandidates(zPixels, forcedEncoding);
+			int bestIndex = SelectBestCandidateIndex(candidates);
 
-			var candidates = new List<(PixelEncoding mode, byte[] data)>();
+			Writer.Write((byte)candidates[bestIndex].Mode);
+			Writer.Write(candidates[bestIndex].Data);
+		}
 
-			if (forcedEncoding == null)
+		public ArbitraryPictureEncodingAnalysis AnalyzeEncoding(PixelEncoding? forcedEncoding = null)
+		{
+			int[] zOrder = Helpers.GenerateZOrderIndices(Descriptor.Width, Descriptor.Height);
+			Color[] zPixels = ReorderPixelsToZOrder(zOrder);
+			List<PayloadCandidate> candidates = BuildPayloadCandidates(zPixels, forcedEncoding);
+			int bestIndex = SelectBestCandidateIndex(candidates);
+
+			var analyses = new List<PixelEncodingCandidateAnalysis>(candidates.Count);
+			for (int i = 0; i < candidates.Count; i++)
 			{
-				candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
-
-				if (ImageData.Length == 0 || IsSolidFill())
-					candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
-
-				var uniqueArgbs = GetUniqueArgbSet();
-				if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
-					candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
-
-				if (IsMonochrome())
-					candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
-
-				if (ImageData.Length > 0)
-					candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
-
-				candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
-				candidates.Add((PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
-			}
-			else
-			{
-				// Try the forced encoding; fall back to auto-select if not applicable
-				bool added = false;
-				switch (forcedEncoding.Value)
-				{
-					case PixelEncoding.ChannelPlanes:
-						candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
-						added = true;
-						break;
-					case PixelEncoding.SolidFill:
-						if (ImageData.Length == 0 || IsSolidFill())
-						{
-							candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
-							added = true;
-						}
-						break;
-					case PixelEncoding.PaletteIndexed:
-						var ua = GetUniqueArgbSet();
-						if (ua.Count <= 256 && ua.Count > 0)
-						{
-							candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, ua)));
-							added = true;
-						}
-						break;
-					case PixelEncoding.MonoAlpha:
-						if (IsMonochrome())
-						{
-							candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
-							added = true;
-						}
-						break;
-					case PixelEncoding.ColorSorted:
-						if (ImageData.Length > 0)
-						{
-							candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
-							added = true;
-						}
-						break;
-					case PixelEncoding.PaethFullGrid:
-						candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
-						added = true;
-						break;
-					case PixelEncoding.PaethChannelPlanes:
-						candidates.Add((PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
-						added = true;
-						break;
-				}
-
-				if (!added)
-				{
-					// Forced encoding not applicable, fall back to auto
-					candidates.Add((PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
-					if (ImageData.Length == 0 || IsSolidFill())
-						candidates.Add((PixelEncoding.SolidFill, EncodeSolidFill()));
-					var uniqueArgbs = GetUniqueArgbSet();
-					if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
-						candidates.Add((PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
-					if (IsMonochrome())
-						candidates.Add((PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
-					if (ImageData.Length > 0)
-						candidates.Add((PixelEncoding.ColorSorted, EncodeColorSorted()));
-					candidates.Add((PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
-					candidates.Add((PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
-				}
+				analyses.Add(new PixelEncodingCandidateAnalysis(
+					candidates[i].Mode,
+					1 + candidates[i].Data.Length,
+					i == bestIndex,
+					AnalyzePayloadCandidate(candidates[i].Mode, candidates[i].Data)));
 			}
 
-			PixelEncoding bestMode = candidates[0].mode;
-			byte[] bestData = candidates[0].data;
-			for (int i = 1; i < candidates.Count; i++)
-			{
-				if (candidates[i].data.Length < bestData.Length)
-				{
-					bestMode = candidates[i].mode;
-					bestData = candidates[i].data;
-				}
-			}
-
-			Writer.Write((byte)bestMode);
-			Writer.Write(bestData);
+			return new ArbitraryPictureEncodingAnalysis(
+				Background,
+				ApfReadHelpers.CheckedElementCount(Descriptor.Width, Descriptor.Height),
+				ImageData.Length,
+				Descriptor.AnalyzeEncoding(),
+				analyses,
+				analyses[bestIndex]);
 		}
 
 		Color[] ReorderPixelsToZOrder(int[] zOrder)
@@ -384,6 +373,332 @@ namespace ArbitraryPictureFormat
 				if (si >= 0)
 					ImageData[si] = zPixels[zi++];
 			}
+		}
+
+		List<PayloadCandidate> BuildPayloadCandidates(Color[] zPixels, PixelEncoding? forcedEncoding)
+		{
+			var candidates = new List<PayloadCandidate>();
+
+			void addDefaultCandidates()
+			{
+				candidates.Add(new PayloadCandidate(PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+
+				if (ImageData.Length == 0 || IsSolidFill())
+					candidates.Add(new PayloadCandidate(PixelEncoding.SolidFill, EncodeSolidFill()));
+
+				HashSet<int> uniqueArgbs = GetUniqueArgbSet();
+				if (uniqueArgbs.Count <= 256 && uniqueArgbs.Count > 0)
+					candidates.Add(new PayloadCandidate(PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, uniqueArgbs)));
+
+				if (IsMonochrome())
+					candidates.Add(new PayloadCandidate(PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
+
+				if (ImageData.Length > 0)
+					candidates.Add(new PayloadCandidate(PixelEncoding.ColorSorted, EncodeColorSorted()));
+
+				candidates.Add(new PayloadCandidate(PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+				candidates.Add(new PayloadCandidate(PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
+			}
+
+			if (forcedEncoding == null)
+			{
+				addDefaultCandidates();
+				return candidates;
+			}
+
+			bool added = false;
+			switch (forcedEncoding.Value)
+			{
+				case PixelEncoding.ChannelPlanes:
+					candidates.Add(new PayloadCandidate(PixelEncoding.ChannelPlanes, EncodeChannelPlanes(zPixels)));
+					added = true;
+					break;
+				case PixelEncoding.SolidFill:
+					if (ImageData.Length == 0 || IsSolidFill())
+					{
+						candidates.Add(new PayloadCandidate(PixelEncoding.SolidFill, EncodeSolidFill()));
+						added = true;
+					}
+					break;
+				case PixelEncoding.PaletteIndexed:
+					HashSet<int> ua = GetUniqueArgbSet();
+					if (ua.Count <= 256 && ua.Count > 0)
+					{
+						candidates.Add(new PayloadCandidate(PixelEncoding.PaletteIndexed, EncodePaletteIndexed(zPixels, ua)));
+						added = true;
+					}
+					break;
+				case PixelEncoding.MonoAlpha:
+					if (IsMonochrome())
+					{
+						candidates.Add(new PayloadCandidate(PixelEncoding.MonoAlpha, EncodeMonoAlpha(zPixels)));
+						added = true;
+					}
+					break;
+				case PixelEncoding.ColorSorted:
+					if (ImageData.Length > 0)
+					{
+						candidates.Add(new PayloadCandidate(PixelEncoding.ColorSorted, EncodeColorSorted()));
+						added = true;
+					}
+					break;
+				case PixelEncoding.PaethFullGrid:
+					candidates.Add(new PayloadCandidate(PixelEncoding.PaethFullGrid, EncodePaethFullGrid()));
+					added = true;
+					break;
+				case PixelEncoding.PaethChannelPlanes:
+					candidates.Add(new PayloadCandidate(PixelEncoding.PaethChannelPlanes, EncodePaethChannelPlanes()));
+					added = true;
+					break;
+			}
+
+			if (!added)
+				addDefaultCandidates();
+
+			return candidates;
+		}
+
+		static int SelectBestCandidateIndex(List<PayloadCandidate> candidates)
+		{
+			int bestIndex = 0;
+			int bestSize = candidates[0].Data.Length;
+			for (int i = 1; i < candidates.Count; i++)
+			{
+				if (candidates[i].Data.Length < bestSize)
+				{
+					bestIndex = i;
+					bestSize = candidates[i].Data.Length;
+				}
+			}
+
+			return bestIndex;
+		}
+
+		List<PayloadComponentAnalysis> AnalyzePayloadCandidate(PixelEncoding mode, byte[] data)
+		{
+			int totalPixelCount = ApfReadHelpers.CheckedElementCount(Descriptor.Width, Descriptor.Height);
+			int shapePixelCount = ImageData.Length;
+
+			using (var ms = new MemoryStream(data, false))
+			using (var reader = new BinaryReader(ms))
+			{
+				var components = new List<PayloadComponentAnalysis>();
+				switch (mode)
+				{
+					case PixelEncoding.ChannelPlanes:
+						{
+							byte flags = reader.ReadByte();
+							bool isMono = (flags & 1) != 0;
+							bool hasR = (flags & 2) != 0;
+							bool hasG = (flags & 4) != 0;
+							bool hasB = (flags & 8) != 0;
+							bool hasA = (flags & 16) != 0;
+							byte defR = reader.ReadByte();
+							byte defG = reader.ReadByte();
+							byte defB = reader.ReadByte();
+							byte defA = reader.ReadByte();
+
+							components.Add(new PayloadComponentAnalysis(
+								"Header",
+								5,
+								5,
+								details: $"flags=0x{flags:X2}, defaults={FormatArgb(defA, defR, defG, defB)}"));
+
+							if (isMono)
+							{
+								if (hasR)
+									components.Add(ReadCompressedComponent(reader, "Luma plane", "delta", shapePixelCount));
+							}
+							else
+							{
+								if (hasR)
+									components.Add(ReadCompressedComponent(reader, "Red plane", "delta", shapePixelCount));
+								if (hasG)
+									components.Add(ReadCompressedComponent(reader, "Green plane", "delta", shapePixelCount));
+								if (hasB)
+									components.Add(ReadCompressedComponent(reader, "Blue plane", "delta", shapePixelCount));
+							}
+
+							if (hasA)
+								components.Add(ReadCompressedComponent(reader, "Alpha plane", "delta", shapePixelCount));
+							break;
+						}
+
+					case PixelEncoding.SolidFill:
+						components.Add(new PayloadComponentAnalysis(
+							"Solid color",
+							4,
+							4,
+							details: FormatArgb(reader.ReadInt32())));
+						break;
+
+					case PixelEncoding.PaletteIndexed:
+						{
+							ushort paletteLength = reader.ReadUInt16();
+							for (int i = 0; i < paletteLength; i++)
+								reader.ReadInt32();
+
+							byte bitsPerIndex = reader.ReadByte();
+							components.Add(new PayloadComponentAnalysis(
+								"Palette",
+								2 + (paletteLength * 4),
+								2 + (paletteLength * 4),
+								details: $"{paletteLength} colors"));
+
+							int packedLength = CheckedPackedLength(shapePixelCount, bitsPerIndex);
+							components.Add(ReadCompressedComponent(
+								reader,
+								"Index stream",
+								"delta",
+								packedLength,
+								$"{bitsPerIndex} bits/index"));
+							break;
+						}
+
+					case PixelEncoding.MonoAlpha:
+						{
+							components.Add(ReadCompressedComponent(reader, "Luma plane", "delta", shapePixelCount));
+							byte alphaMode = reader.ReadByte();
+							components.Add(new PayloadComponentAnalysis(
+								"Alpha selector",
+								1,
+								1,
+								details: alphaMode == 0 ? "constant alpha" : "per-pixel alpha"));
+							if (alphaMode != 0)
+								components.Add(ReadCompressedComponent(reader, "Alpha plane", "delta", shapePixelCount));
+							else
+								components.Add(new PayloadComponentAnalysis(
+									"Alpha constant",
+									1,
+									1,
+									details: reader.ReadByte().ToString()));
+							break;
+						}
+
+					case PixelEncoding.ColorSorted:
+						{
+							int uniqueCount = reader.ReadInt32();
+							for (int i = 0; i < uniqueCount; i++)
+								reader.ReadInt32();
+							for (int i = 0; i < uniqueCount; i++)
+								reader.ReadInt32();
+							byte posWidth = reader.ReadByte();
+
+							components.Add(new PayloadComponentAnalysis(
+								"Color table and counts",
+								4 + (uniqueCount * 4) + (uniqueCount * 4) + 1,
+								4 + (uniqueCount * 4) + (uniqueCount * 4) + 1,
+								details: $"{uniqueCount} colors, {posWidth}-byte deltas"));
+							components.Add(ReadCompressedComponent(reader, "Position deltas", "none", shapePixelCount * posWidth));
+							break;
+						}
+
+					case PixelEncoding.PaethFullGrid:
+						{
+							byte flags = reader.ReadByte();
+							bool hasR = (flags & 1) != 0;
+							bool hasG = (flags & 2) != 0;
+							bool hasB = (flags & 4) != 0;
+							bool hasA = (flags & 8) != 0;
+							bool isMono = (flags & 16) != 0;
+							components.Add(new PayloadComponentAnalysis("Channel flags", 1, 1, details: $"0x{flags:X2}"));
+							components.Add(ReadPaethPlaneComponent(reader, "Red plane", hasR, totalPixelCount));
+							if (isMono)
+								components.Add(new PayloadComponentAnalysis("Green/Blue reuse", 0, 0, details: "monochrome RGB"));
+							else
+							{
+								components.Add(ReadPaethPlaneComponent(reader, "Green plane", hasG, totalPixelCount));
+								components.Add(ReadPaethPlaneComponent(reader, "Blue plane", hasB, totalPixelCount));
+							}
+							components.Add(ReadPaethPlaneComponent(reader, "Alpha plane", hasA, totalPixelCount));
+							break;
+						}
+
+					case PixelEncoding.PaethChannelPlanes:
+						{
+							byte flags = reader.ReadByte();
+							bool hasR = (flags & 1) != 0;
+							bool hasG = (flags & 2) != 0;
+							bool hasB = (flags & 4) != 0;
+							bool hasA = (flags & 8) != 0;
+							bool isMono = (flags & 16) != 0;
+							components.Add(new PayloadComponentAnalysis("Channel flags", 1, 1, details: $"0x{flags:X2}"));
+							components.Add(ReadPaethPlaneComponent(reader, "Red stencil residuals", hasR, shapePixelCount));
+							if (isMono)
+								components.Add(new PayloadComponentAnalysis("Green/Blue reuse", 0, 0, details: "monochrome RGB"));
+							else
+							{
+								components.Add(ReadPaethPlaneComponent(reader, "Green stencil residuals", hasG, shapePixelCount));
+								components.Add(ReadPaethPlaneComponent(reader, "Blue stencil residuals", hasB, shapePixelCount));
+							}
+							components.Add(ReadPaethPlaneComponent(reader, "Alpha stencil residuals", hasA, shapePixelCount));
+							break;
+						}
+				}
+
+				if (ms.Position != ms.Length)
+					throw new InvalidDataException($"Payload analysis for {mode} left unread bytes behind.");
+
+				return components;
+			}
+		}
+
+		static PayloadComponentAnalysis ReadCompressedComponent(BinaryReader reader, string name, string transform, int rawSize, string details = null)
+		{
+			int length = reader.ReadInt32();
+			byte[] compressed = reader.ReadBytes(length);
+			if (compressed.Length != length)
+				throw new EndOfStreamException("Truncated payload component during analysis.");
+			return new PayloadComponentAnalysis(
+				name,
+				rawSize,
+				4 + length,
+				transform,
+				AnalyzeCompression(compressed, rawSize),
+				details);
+		}
+
+		static PayloadComponentAnalysis ReadPaethPlaneComponent(BinaryReader reader, string name, bool compressed, int rawSize)
+		{
+			if (compressed)
+				return ReadCompressedComponent(reader, name, "Paeth", rawSize);
+
+			return new PayloadComponentAnalysis(
+				name,
+				1,
+				1,
+				details: $"constant={reader.ReadByte()}");
+		}
+
+		static CompressionAnalysis AnalyzeCompression(byte[] compressed, int rawSize)
+		{
+			if (compressed.Length == 0)
+				throw new InvalidDataException("Compressed component is empty.");
+
+			return new CompressionAnalysis(GetCompressionMode(compressed[0]), rawSize, compressed.Length);
+		}
+
+		static CompressionMode GetCompressionMode(byte mode)
+		{
+			return mode switch
+			{
+				0 => CompressionMode.Rle,
+				1 => CompressionMode.Lz77,
+				2 => CompressionMode.Rans,
+				3 => CompressionMode.Lz77Rans,
+				_ => throw new InvalidDataException("Unknown compression mode in analyzed payload: " + mode),
+			};
+		}
+
+		static string FormatArgb(int argb)
+		{
+			Color c = Color.FromArgb(argb);
+			return FormatArgb(c.A, c.R, c.G, c.B);
+		}
+
+		static string FormatArgb(byte a, byte r, byte g, byte b)
+		{
+			return $"#{a:X2}{r:X2}{g:X2}{b:X2}";
 		}
 
 		// --- Encode methods ---
@@ -1088,6 +1403,20 @@ namespace ArbitraryPictureFormat
 
 	public struct ShapeDesc
 	{
+		readonly struct StencilCandidate
+		{
+			public StencilCandidate(StencilEncodingMode mode, byte[] rawBits)
+			{
+				Mode = mode;
+				RawBits = rawBits;
+				Compressed = Helpers.Compress(rawBits);
+			}
+
+			public StencilEncodingMode Mode { get; }
+			public byte[] RawBits { get; }
+			public byte[] Compressed { get; }
+		}
+
 		public int Width, Height;
 		public BitArray Data;
 
@@ -1150,17 +1479,29 @@ namespace ArbitraryPictureFormat
 				return;
 			}
 
-			int[] zOrder = Helpers.GenerateZOrderIndices(Width, Height);
-			BitArray zData = new BitArray(Data.Length);
-			for (int i = 0; i < zOrder.Length; i++)
-				zData[i] = Data[zOrder[i]];
+			StencilCandidate candidate = SelectBestStencilCandidate();
+			if (candidate.Mode == StencilEncodingMode.ZOrder)
+				Writer.Write(candidate.RawBits.Length);
+			else
+				Writer.Write(-GetStencilEncodingMarker(candidate.Mode));
 
-			byte[] raw = zData.ToByteArray();
-			byte[] compressed = Helpers.Compress(raw);
+			Writer.Write(candidate.Compressed.Length);
+			Writer.Write(candidate.Compressed);
+		}
 
-			Writer.Write(raw.Length);
-			Writer.Write(compressed.Length);
-			Writer.Write(compressed);
+		public StencilEncodingAnalysis AnalyzeEncoding()
+		{
+			int total = Width * Height;
+			if (GetCount() == total)
+				return new StencilEncodingAnalysis(StencilEncodingMode.FullCoverage, true, 0, 16);
+
+			StencilCandidate candidate = SelectBestStencilCandidate();
+			return new StencilEncodingAnalysis(
+				candidate.Mode,
+				false,
+				candidate.RawBits.Length,
+				16 + candidate.Compressed.Length,
+				new CompressionAnalysis((CompressionMode)candidate.Compressed[0], candidate.RawBits.Length, candidate.Compressed.Length));
 		}
 
 		void Deserialize(Stream S)
@@ -1177,7 +1518,6 @@ namespace ArbitraryPictureFormat
 
 			int rawLen = Reader.ReadInt32();
 			int compLen = Reader.ReadInt32();
-			ApfReadHelpers.ValidateLength(rawLen, "shape stencil");
 			ApfReadHelpers.ValidateLength(compLen, "compressed shape stencil");
 
 			if (rawLen == 0 && compLen == 0)
@@ -1188,19 +1528,136 @@ namespace ArbitraryPictureFormat
 			}
 
 			int expectedRawLen = (total + 7) / 8;
-			if (rawLen != expectedRawLen)
-				throw new InvalidDataException("Shape stencil length does not match image dimensions.");
 			if (compLen == 0)
 				throw new InvalidDataException("Compressed shape stencil cannot be empty.");
 
-			byte[] compressed = ApfReadHelpers.ReadBytesExact(Reader, compLen, "shape stencil");
-			byte[] raw = Helpers.Decompress(compressed, rawLen);
+			StencilEncodingMode mode;
+			if (rawLen > 0)
+			{
+				ApfReadHelpers.ValidateLength(rawLen, "shape stencil");
+				if (rawLen != expectedRawLen)
+					throw new InvalidDataException("Shape stencil length does not match image dimensions.");
+				mode = StencilEncodingMode.ZOrder;
+			}
+			else
+			{
+				mode = GetStencilEncodingMode(-rawLen);
+			}
 
-			BitArray zData = raw.ToBitArray();
-			int[] zOrder = Helpers.GenerateZOrderIndices(Width, Height);
+			byte[] compressed = ApfReadHelpers.ReadBytesExact(Reader, compLen, "shape stencil");
+			byte[] raw = Helpers.Decompress(compressed, expectedRawLen);
+			TrimUnusedBits(raw, total);
+
 			Data = new BitArray(total);
+			switch (mode)
+			{
+				case StencilEncodingMode.ZOrder:
+					{
+						BitArray zData = raw.ToBitArray();
+						int[] zOrder = Helpers.GenerateZOrderIndices(Width, Height);
+						for (int i = 0; i < zOrder.Length; i++)
+							Data[zOrder[i]] = zData[i];
+						break;
+					}
+				case StencilEncodingMode.InvertedZOrder:
+					{
+						InvertBits(raw, total);
+						BitArray zData = raw.ToBitArray();
+						int[] zOrder = Helpers.GenerateZOrderIndices(Width, Height);
+						for (int i = 0; i < zOrder.Length; i++)
+							Data[zOrder[i]] = zData[i];
+						break;
+					}
+				case StencilEncodingMode.Scanline:
+					Data = raw.ToBitArray();
+					break;
+				case StencilEncodingMode.InvertedScanline:
+					InvertBits(raw, total);
+					Data = raw.ToBitArray();
+					break;
+				default:
+					throw new InvalidDataException("Unknown shape stencil encoding mode.");
+			}
+		}
+
+		StencilCandidate SelectBestStencilCandidate()
+		{
+			List<StencilCandidate> candidates = BuildStencilCandidates();
+			StencilCandidate best = candidates[0];
+			for (int i = 1; i < candidates.Count; i++)
+			{
+				if (candidates[i].Compressed.Length < best.Compressed.Length ||
+					(candidates[i].Compressed.Length == best.Compressed.Length && candidates[i].Mode < best.Mode))
+				{
+					best = candidates[i];
+				}
+			}
+
+			return best;
+		}
+
+		List<StencilCandidate> BuildStencilCandidates()
+		{
+			byte[] scanline = Data.ToByteArray();
+			TrimUnusedBits(scanline, Width * Height);
+
+			int[] zOrder = Helpers.GenerateZOrderIndices(Width, Height);
+			BitArray zData = new BitArray(Data.Length);
 			for (int i = 0; i < zOrder.Length; i++)
-				Data[zOrder[i]] = zData[i];
+				zData[i] = Data[zOrder[i]];
+			byte[] zOrderBytes = zData.ToByteArray();
+			TrimUnusedBits(zOrderBytes, Width * Height);
+
+			byte[] invertedScanline = (byte[])scanline.Clone();
+			InvertBits(invertedScanline, Width * Height);
+			byte[] invertedZOrder = (byte[])zOrderBytes.Clone();
+			InvertBits(invertedZOrder, Width * Height);
+
+			return new List<StencilCandidate>
+			{
+				new StencilCandidate(StencilEncodingMode.ZOrder, zOrderBytes),
+				new StencilCandidate(StencilEncodingMode.InvertedZOrder, invertedZOrder),
+				new StencilCandidate(StencilEncodingMode.Scanline, scanline),
+				new StencilCandidate(StencilEncodingMode.InvertedScanline, invertedScanline),
+			};
+		}
+
+		static int GetStencilEncodingMarker(StencilEncodingMode mode)
+		{
+			return mode switch
+			{
+				StencilEncodingMode.InvertedZOrder => 1,
+				StencilEncodingMode.Scanline => 2,
+				StencilEncodingMode.InvertedScanline => 3,
+				_ => throw new InvalidOperationException("Legacy Z-order and full-coverage stencils do not use explicit markers."),
+			};
+		}
+
+		static StencilEncodingMode GetStencilEncodingMode(int marker)
+		{
+			return marker switch
+			{
+				1 => StencilEncodingMode.InvertedZOrder,
+				2 => StencilEncodingMode.Scanline,
+				3 => StencilEncodingMode.InvertedScanline,
+				_ => throw new InvalidDataException("Unknown shape stencil encoding mode."),
+			};
+		}
+
+		static void InvertBits(byte[] raw, int totalBits)
+		{
+			for (int i = 0; i < raw.Length; i++)
+				raw[i] = (byte)~raw[i];
+			TrimUnusedBits(raw, totalBits);
+		}
+
+		static void TrimUnusedBits(byte[] raw, int totalBits)
+		{
+			int usedBits = totalBits % 8;
+			if (raw.Length == 0 || usedBits == 0)
+				return;
+
+			raw[raw.Length - 1] &= (byte)((1 << usedBits) - 1);
 		}
 	}
 

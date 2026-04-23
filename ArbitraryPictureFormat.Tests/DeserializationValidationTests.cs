@@ -115,6 +115,25 @@ public class DeserializationValidationTests
 	}
 
 	[Fact]
+	public void Deserialize_RejectsUnknownShapeStencilEncodingMarker()
+	{
+		using var ms = new MemoryStream();
+		using (var writer = new BinaryWriter(ms, System.Text.Encoding.UTF8, leaveOpen: true))
+		{
+			writer.Write((byte)0x10);
+			writer.Write(1);
+			writer.Write(1);
+			writer.Write(-99);
+			writer.Write(1);
+			writer.Write((byte)0);
+		}
+
+		ms.Position = 0;
+		var ex = Assert.Throws<InvalidDataException>(() => ApfFile.Deserialize(ms));
+		Assert.Equal("Unknown shape stencil encoding mode.", ex.Message);
+	}
+
+	[Fact]
 	public void Deserialize_RejectsUnderfilledCompressedPlane()
 	{
 		using var ms = new MemoryStream();

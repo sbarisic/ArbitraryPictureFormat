@@ -297,4 +297,123 @@ public class ApfFileTests
 				Assert.Equal(pixels2[y * 4 + x], bmp2.GetPixel(x, y));
 			}
 	}
+
+	[Fact]
+	public void AnalyzeEncoding_SelectedModeMatchesSerializedPayloadMode()
+	{
+		using Image img = Image.FromFile(Path.Combine(DataDir, "sample.png"));
+		var picture = new ArbitraryPicture(img);
+		ArbitraryPictureEncodingAnalysis analysis = picture.AnalyzeEncoding();
+
+		using var ms = new MemoryStream();
+		picture.Serialize(ms);
+		ms.Position = 0;
+
+		using var reader = new BinaryReader(ms);
+		Assert.Equal(0x10, reader.ReadByte());
+		_ = ShapeDesc.FromStream(reader);
+		_ = reader.ReadInt32();
+		_ = reader.ReadInt32();
+		PixelEncoding storedMode = (PixelEncoding)reader.ReadByte();
+
+		Assert.Equal(analysis.SelectedCandidate.Mode, storedMode);
+		Assert.NotEmpty(analysis.Candidates);
+		Assert.Contains(analysis.Candidates, c => !c.Selected);
+	}
+
+	[Fact]
+	public void AnalyzeEncoding_ReportsStencilAndPayloadBreakdown()
+	{
+		var desc = new ShapeDesc(2, 2);
+		desc.Set(0, 0, true);
+		desc.Set(1, 0, true);
+		desc.Set(0, 1, true);
+		desc.Set(1, 1, true);
+
+		var picture = new ArbitraryPicture(desc, Color.Black)
+		{
+			ImageData = new[]
+			{
+				Color.Red,
+				Color.Green,
+				Color.Blue,
+				Color.White
+			}
+		};
+
+		ArbitraryPictureEncodingAnalysis analysis = picture.AnalyzeEncoding();
+
+		Assert.True(analysis.Stencil.IsFullCoverage);
+		Assert.Equal(16, analysis.Stencil.SerializedSize);
+		Assert.Equal(Color.Black, analysis.Background);
+		Assert.Equal(4, analysis.TotalPixelCount);
+		Assert.Equal(4, analysis.ShapePixelCount);
+		Assert.Contains(analysis.Candidates, c => c.Mode == PixelEncoding.PaletteIndexed);
+		Assert.NotEmpty(analysis.SelectedCandidate.Components);
+		Assert.Contains(
+			analysis.Candidates.SelectMany(c => c.Components),
+			component => component.Compression != null);
+	}
+
+	[Fact]
+	public void ShapeDesc_UsesAlternativeStencilEncodingWhenSmaller()
+	{
+		static ShapeDesc? FindWitness()
+		{
+			foreach (int size in new[] { 16, 24, 32, 48 })
+			{
+				var cases = new List<ShapeDesc>();
+
+				var singleHole = new ShapeDesc(size, size);
+				for (int y = 0; y < size; y++)
+					for (int x = 0; x < size; x++)
+						singleHole.Set(x, y, true);
+				singleHole.Set(size - 1, size - 1, false);
+				cases.Add(singleHole);
+
+				var verticalBand = new ShapeDesc(size, size);
+				for (int y = 0; y < size; y++)
+					for (int x = 0; x < size; x++)
+						verticalBand.Set(x, y, x < size / 3);
+				cases.Add(verticalBand);
+
+				var horizontalBand = new ShapeDesc(size, size);
+				for (int y = 0; y < size; y++)
+					for (int x = 0; x < size; x++)
+						horizontalBand.Set(x, y, y < size / 3);
+				cases.Add(horizontalBand);
+
+				foreach (ShapeDesc candidate in cases)
+				{
+					StencilEncodingAnalysis analysis = candidate.AnalyzeEncoding();
+					if (!analysis.IsFullCoverage && analysis.Mode != StencilEncodingMode.ZOrder)
+						return candidate;
+				}
+			}
+
+			return null;
+		}
+
+		ShapeDesc? desc = FindWitness();
+		Assert.NotNull(desc);
+
+		using var ms = new MemoryStream();
+		desc.Value.Serialize(ms);
+		ms.Position = 0;
+
+		using var reader = new BinaryReader(ms);
+		Assert.Equal(desc.Value.Width, reader.ReadInt32());
+		Assert.Equal(desc.Value.Height, reader.ReadInt32());
+		int rawMarker = reader.ReadInt32();
+		int compLen = reader.ReadInt32();
+
+		Assert.True(rawMarker < 0, "Expected a negative stencil marker for a non-legacy alternative encoding.");
+		Assert.True(compLen > 0);
+
+		ms.Position = 0;
+		ShapeDesc roundTripped = ShapeDesc.FromStream(ms);
+		for (int y = 0; y < desc.Value.Height; y++)
+			for (int x = 0; x < desc.Value.Width; x++)
+				Assert.Equal(desc.Value.Get(x, y), roundTripped.Get(x, y));
+	}
 }

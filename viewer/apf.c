@@ -507,6 +507,13 @@ typedef struct {
 	uint8_t* bits; /* packed bits, LSB-first within each byte, scanline order */
 } Stencil;
 
+typedef enum {
+	STENCIL_ENCODING_Z_ORDER = 0,
+	STENCIL_ENCODING_INVERTED_Z_ORDER = 1,
+	STENCIL_ENCODING_SCANLINE = 2,
+	STENCIL_ENCODING_INVERTED_SCANLINE = 3,
+} StencilEncoding;
+
 static int stencil_get(const Stencil* s, int x, int y) {
 	int i = y * s->width + x;
 	return (s->bits[i / 8] >> (i % 8)) & 1;
@@ -519,6 +526,22 @@ static int stencil_count(const Stencil* s) {
 	for (int i = 0; i < total; i++)
 		if ((s->bits[i / 8] >> (i % 8)) & 1) count++;
 	return count;
+}
+
+static void clear_unused_bits(uint8_t* bits, int total_bits) {
+	if (!bits) return;
+	int used_bits = total_bits % 8;
+	if (used_bits == 0) return;
+	int byte_count;
+	if (!checked_byte_count_for_bits(total_bits, &byte_count) || byte_count <= 0) return;
+	bits[byte_count - 1] &= (uint8_t)((1 << used_bits) - 1);
+}
+
+static void invert_bits(uint8_t* bits, int byte_count, int total_bits) {
+	if (!bits) return;
+	for (int i = 0; i < byte_count; i++)
+		bits[i] = (uint8_t)~bits[i];
+	clear_unused_bits(bits, total_bits);
 }
 
 static int decode_stencil(Reader* r, Stencil* s) {
@@ -534,7 +557,7 @@ static int decode_stencil(Reader* r, Stencil* s) {
 	int byte_count;
 	if (!checked_total_pixels(w, h, &total)) return 0;
 	if (!checked_byte_count_for_bits(total, &byte_count)) return 0;
-	if (!checked_len(raw_len) || !checked_len(comp_len)) return 0;
+	if (!checked_len(comp_len)) return 0;
 
 	s->bits = (uint8_t*)apf_malloc_array((size_t)byte_count, 1);
 	if (!s->bits) return 0;
@@ -549,33 +572,62 @@ static int decode_stencil(Reader* r, Stencil* s) {
 		return 1;
 	}
 
-	if (raw_len != byte_count || comp_len <= 0) { free(s->bits); s->bits = NULL; return 0; }
+	if (comp_len <= 0) { free(s->bits); s->bits = NULL; return 0; }
 
-	/* Read compressed Z-ordered stencil */
+	StencilEncoding mode = STENCIL_ENCODING_Z_ORDER;
+	int decoded_len = byte_count;
+	if (raw_len > 0) {
+		if (!checked_len(raw_len) || raw_len != byte_count) { free(s->bits); s->bits = NULL; return 0; }
+	}
+	else {
+		switch (-raw_len) {
+		case 1: mode = STENCIL_ENCODING_INVERTED_Z_ORDER; break;
+		case 2: mode = STENCIL_ENCODING_SCANLINE; break;
+		case 3: mode = STENCIL_ENCODING_INVERTED_SCANLINE; break;
+		default:
+			free(s->bits);
+			s->bits = NULL;
+			return 0;
+		}
+	}
+
+	/* Read compressed stencil bits */
 	uint8_t* comp = (uint8_t*)apf_malloc_array((size_t)comp_len, 1);
 	if (!comp) { free(s->bits); s->bits = NULL; return 0; }
 	if (!read_bytes(r, comp, comp_len)) { free(comp); free(s->bits); s->bits = NULL; return 0; }
 
-	uint8_t* z_bits = decompress(comp, comp_len, raw_len);
+	uint8_t* raw_bits = decompress(comp, comp_len, decoded_len);
 	free(comp);
-	if (!z_bits) { free(s->bits); s->bits = NULL; return 0; }
+	if (!raw_bits) { free(s->bits); s->bits = NULL; return 0; }
+	clear_unused_bits(raw_bits, total);
+
+	if (mode == STENCIL_ENCODING_SCANLINE || mode == STENCIL_ENCODING_INVERTED_SCANLINE) {
+		if (mode == STENCIL_ENCODING_INVERTED_SCANLINE)
+			invert_bits(raw_bits, byte_count, total);
+		memcpy(s->bits, raw_bits, (size_t)byte_count);
+		free(raw_bits);
+		return 1;
+	}
+
+	if (mode == STENCIL_ENCODING_INVERTED_Z_ORDER)
+		invert_bits(raw_bits, byte_count, total);
 
 	/* Generate Z-order and reorder back to scanline */
 	int* z_order = generate_z_order_indices(w, h);
-	if (!z_order) { free(z_bits); free(s->bits); s->bits = NULL; return 0; }
+	if (!z_order) { free(raw_bits); free(s->bits); s->bits = NULL; return 0; }
 
 	memset(s->bits, 0, byte_count);
 	for (int i = 0; i < total; i++) {
 		int src_byte = i / 8;
 		int src_bit = i % 8;
-		int bit_val = (z_bits[src_byte] >> src_bit) & 1;
+		int bit_val = (raw_bits[src_byte] >> src_bit) & 1;
 		if (bit_val) {
 			int dst = z_order[i];
 			s->bits[dst / 8] |= (uint8_t)(1 << (dst % 8));
 		}
 	}
 
-	free(z_bits);
+	free(raw_bits);
 	free(z_order);
 	return 1;
 }

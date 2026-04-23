@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 
 namespace ArbitraryPictureFormat
 {
@@ -181,6 +182,55 @@ namespace ArbitraryPictureFormat
 				Console.WriteLine("      Background: #{0:X2}{1:X2}{2:X2}{3:X2}",
 					bg.A, bg.R, bg.G, bg.B);
 
+				ArbitraryPictureEncodingAnalysis analysis = img.Picture.AnalyzeEncoding();
+				Console.WriteLine("      Encoder Analysis:");
+				Console.WriteLine("        Selected: {0} ({1:N0} payload bytes)", analysis.SelectedCandidate.Mode, analysis.SelectedCandidate.PayloadSize);
+
+				var rejected = analysis.Candidates
+					.Where(c => !c.Selected)
+					.Select(c => $"{c.Mode}={c.PayloadSize:N0} B")
+					.ToArray();
+				Console.WriteLine("        Rejected: {0}", rejected.Length > 0 ? string.Join(", ", rejected) : "(none)");
+
+				if (analysis.Stencil.IsFullCoverage)
+				{
+					Console.WriteLine("        Stencil:  full coverage sentinel ({0:N0} serialized bytes)", analysis.Stencil.SerializedSize);
+				}
+				else
+				{
+					Console.WriteLine("        Stencil:  {0} - {1:N0} raw bytes -> {2:N0} serialized bytes via {3}",
+						FormatStencilMode(analysis.Stencil.Mode),
+						analysis.Stencil.RawSize,
+						analysis.Stencil.SerializedSize,
+						FormatCompression(analysis.Stencil.Compression.Mode));
+				}
+
+				Console.WriteLine("        Payload:");
+				foreach (PayloadComponentAnalysis component in analysis.SelectedCandidate.Components)
+				{
+					string line = string.Format("          - {0}: {1:N0} B stored", component.Name, component.StoredSize);
+					if (component.Compression != null)
+					{
+						line += string.Format(" ({0}, {1:N0} B raw, {2})",
+							FormatCompression(component.Compression.Mode),
+							component.RawSize,
+							component.Transform ?? "direct");
+					}
+					else if (!string.IsNullOrEmpty(component.Transform))
+					{
+						line += string.Format(" ({0}, {1:N0} B raw)", component.Transform, component.RawSize);
+					}
+					else if (component.RawSize != component.StoredSize)
+					{
+						line += string.Format(" ({0:N0} B raw)", component.RawSize);
+					}
+
+					if (!string.IsNullOrEmpty(component.Details))
+						line += " - " + component.Details;
+
+					Console.WriteLine(line);
+				}
+
 				if (img.HasMetadata && img.Metadata.Count > 0)
 				{
 					Console.WriteLine("      Metadata:");
@@ -198,13 +248,13 @@ namespace ArbitraryPictureFormat
 			Console.WriteLine("Usage:");
 			Console.WriteLine("  apf <image.png>              Encode PNG/BMP/etc to APF");
 			Console.WriteLine("  apf <image.apf>              Decode APF to PNG");
-			Console.WriteLine("  apf -info <image.apf>        Show image/metadata info");
+			Console.WriteLine("  apf -info <image.apf>        Show image, metadata, and encoder analysis");
 			Console.WriteLine();
 			Console.WriteLine("Options:");
 			Console.WriteLine("  -o, --output <path>          Set output file path");
 			Console.WriteLine("  -s, --stencil                Also export stencil mask (decode only)");
 			Console.WriteLine("  -l, --layer <name>           Select image by name (multi-image APF)");
-			Console.WriteLine("  -i, -info, --info            Print file info and metadata");
+			Console.WriteLine("  -i, -info, --info            Print file info, metadata, and size analysis");
 			Console.WriteLine("  -h, --help                   Show this help");
 			Console.WriteLine();
 			Console.WriteLine("Examples:");
@@ -212,8 +262,33 @@ namespace ArbitraryPictureFormat
 			Console.WriteLine("  apf sprite.apf               → sprite.png");
 			Console.WriteLine("  apf icon.apf -s              → icon.png + icon_stencil.png");
 			Console.WriteLine("  apf model.apf -l normal      → extract 'normal' layer");
-			Console.WriteLine("  apf -info model.apf          → list images and metadata");
+			Console.WriteLine("  apf -info model.apf          → list images, metadata, and encoder analysis");
 			Console.WriteLine("  apf logo.png -o out/logo.apf → out/logo.apf");
+		}
+
+		static string FormatCompression(CompressionMode mode)
+		{
+			return mode switch
+			{
+				CompressionMode.Rle => "RLE",
+				CompressionMode.Lz77 => "LZ77",
+				CompressionMode.Rans => "rANS",
+				CompressionMode.Lz77Rans => "LZ77+rANS",
+				_ => mode.ToString()
+			};
+		}
+
+		static string FormatStencilMode(StencilEncodingMode mode)
+		{
+			return mode switch
+			{
+				StencilEncodingMode.ZOrder => "Z-order bitset",
+				StencilEncodingMode.InvertedZOrder => "inverted Z-order bitset",
+				StencilEncodingMode.Scanline => "scanline bitset",
+				StencilEncodingMode.InvertedScanline => "inverted scanline bitset",
+				StencilEncodingMode.FullCoverage => "full coverage sentinel",
+				_ => mode.ToString()
+			};
 		}
 	}
 }

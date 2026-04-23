@@ -49,14 +49,14 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### ON HOLD
 
-- [ ] [CPX: 2] Add an APF inspection command that prints the selected pixel encoding, compressed stream modes, stencil size, and payload size breakdown.
 - [ ] [CPX: 3] Add a small sample app that demonstrates using the NuGet package to create, inspect, and decode APF files.
 
 ---
 
 ## Improvements
 
-* No Improvements items *
+- [ ] [CPX: 4] Let palette/channel/index streams choose their own pre-transform (`none`, delta, Paeth, row-wise delta) before compression instead of hard-coding a single transform per mode.
+- [ ] [CPX: 4] Rework `PaletteIndexed` and `ColorSorted` ordering so palette codes and position streams are assigned for compressibility, not just ARGB sort order or raw fixed-width gaps.
 
 ### ON HOLD
 
@@ -66,6 +66,9 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 - [ ] [CPX: 2] Report Paint.NET save progress and honor cancellation through the existing `ProgressEventHandler`.
 - [ ] [CPX: 3] Package the Paint.NET plugins through a repeatable publish script or artifact folder instead of copying Release builds directly into `C:\Program Files\paint.net`.
 - [ ] [CPX: 4] Profile large-image encoding and consider parallelizing encoding candidates or caching generated Z-order tables.
+- [ ] [CPX: 5] Explore tiled/local palette or mixed-mode block encodings for images that are locally simple but compress poorly with one global mode.
+- [ ] [CPX: 5] Add multi-image container dedup/shared palettes/shared backgrounds and compressed name/metadata blocks so layered APF files do not pay full per-image overhead every time.
+- [ ] [CPX: 5] Benchmark stronger entropy coding and table serialization for small streams and small alphabets against the current RLE/LZ77/rANS chooser.
 - [ ] [CPX: 2] Replace diagnostic console output in regular tests with `ITestOutputHelper` or mark diagnostics as explicit/manual tests.
 
 ---
@@ -93,7 +96,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### ON HOLD
 
-- [ ] [CPX: 4] Split `ArbitraryPicture.cs` into focused files for the image model, shape descriptor, pixel encoders, compression helpers, and bitmap interop.
+- [ ] [CPX: 4] Split `ArbitraryPicture.cs` into focused files for the image model, shape descriptor, pixel encoders, compression helpers, and bitmap interop so new size-focused encoders/transforms can be added and benchmarked without growing the monolith further.
 - [ ] [CPX: 2] Deduplicate the two `ApfMetadataStore` implementations used by the Paint.NET file type and effect plugins.
 - [ ] [CPX: 3] Replace the Paint.NET metadata temp-file INI format with a structured format that preserves `=`, brackets, newlines, whitespace, duplicate layer names, and renamed layers.
 - [ ] [CPX: 2] Update or remove `diag.csx`; it appears stale against the current `ArbitraryPicture.Save(string)` API.
@@ -116,7 +119,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ## Notes
 
-- Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 29 tests.
+- Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 34 tests.
 - C viewer build baseline: `cmake --build viewer\build --config Debug --target apf_viewer` succeeds.
 - Paint.NET plugin build baseline: both plugin projects build warning-free.
 - Treat the binary format as compatibility-sensitive: add fixtures before changing serialized bytes, headers, compression mode selection, or metadata layout.
@@ -133,7 +136,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 - [x] Implemented APF v1.0 single-image files, v1.1 metadata files, and v2.0 multi-image containers.
 - [x] Implemented seven pixel encoding modes with auto-selection.
 - [x] Implemented shared RLE, LZ77, rANS, and LZ77+rANS compression selection.
-- [x] Implemented CLI encode, decode, stencil export, layer extraction, and file info output.
+- [x] Implemented CLI encode, decode, stencil export, layer extraction, file info output, and `-info` encoder size analysis with candidate and payload breakdown reporting.
 - [x] Implemented Paint.NET file type and metadata-editing effect plugins.
 - [x] Implemented a C99/Raylib APF viewer with multi-image layer navigation.
 
@@ -142,6 +145,8 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 - [x] Added xUnit coverage for file-size thresholds, lossless round-trips, compression round-trips, metadata, versions, and multi-image containers.
 - [x] Added NuGet package metadata for the core library.
 - [x] Added Z-order stencil serialization and sub-byte palette index packing.
+- [x] Made background selection size-aware by scoring a shortlist of candidate colors against estimated APF size instead of always taking the most common color.
+- [x] Added selectable stencil encodings (Z-order, inverted Z-order, scanline, inverted scanline) and now choose the smallest instead of always emitting a compressed Z-order bitset.
 - [x] Aligned the Paint.NET plugin projects with Paint.NET's desktop framework dependencies by enabling WPF and explicitly referencing `System.Runtime.Serialization.Formatters`, removing the MSB3277 assembly conflict warnings.
 - [x] Migrated `ApfMetadataEffect` from the obsolete classic `PropertyBasedEffect` base class to `PropertyBasedBitmapEffect`, preserving the metadata UI while removing the final Paint.NET deprecation warning.
 
