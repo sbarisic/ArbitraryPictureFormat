@@ -34,13 +34,12 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ### Medium Priority
 
-* No Medium priority items *
+* No Medium Priority items *
 
 ### ON HOLD
 
 - [ ] [CPX: 3] Add CLI options to attach metadata during encode and to update metadata in existing APF files without round-tripping through Paint.NET.
 - [ ] [CPX: 3] Add stable APF golden fixtures for v1.0, v1.1, v2.0, and all seven pixel encoding modes so backward compatibility is tested independently from the current encoder.
-- [ ] [CPX: 2] Expose an in-memory C decoder API alongside `apf_load_file` for embedded callers that already have bytes in flash or RAM.
 - [ ] [CPX: 2] Add structured error reporting to the C decoder instead of only returning `NULL`.
 - [ ] [CPX: 3] Improve the Raylib viewer with zoom, pan, fit-to-window, transparency checkerboard, and direct layer selection.
 
@@ -116,7 +115,7 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 
 ## Notes
 
-- Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 25 tests.
+- Current verification baseline: `dotnet test ArbitraryPictureFormat.Tests` passes 29 tests.
 - C viewer build baseline: `cmake --build viewer\build --config Debug --target apf_viewer` succeeds.
 - Paint.NET plugin build baseline: both plugin projects build successfully, with existing Paint.NET reference warnings.
 - Treat the binary format as compatibility-sensitive: add fixtures before changing serialized bytes, headers, compression mode selection, or metadata layout.
@@ -153,3 +152,4 @@ Paint.NET integration, xUnit regression tests, and a C99/Raylib decoder-viewer.
 - [x] Replaced `_strdup` in `viewer/apf.c` with a portable helper so the decoder no longer depends on the MSVC-specific CRT entry point.
 - [x] Rejected zero-image APF files with clear .NET serialization/deserialization errors and matching C decoder rejection.
 - [x] Updated `ArbitraryPicture.FromFile` to load any single-image APF container and to reject multi-image files with a clear error directing callers to `ApfFile.FromFile`.
+- [x] Exposed an in-memory C decoder API via `apf_load_memory(const uint8_t *data, size_t size)` alongside `apf_load_file`.

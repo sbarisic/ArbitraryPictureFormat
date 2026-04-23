@@ -3,15 +3,18 @@ using ArbitraryPictureFormat;
 
 namespace ArbitraryPictureFormat.Tests;
 
-public class FileSizeTests {
+public class FileSizeTests
+{
 	static string DataDir => Path.Combine(AppContext.BaseDirectory, "data", "png");
 	static string OutDir => Path.Combine(AppContext.BaseDirectory, "data", "apf_test");
 
-	static FileSizeTests() {
+	static FileSizeTests()
+	{
 		Directory.CreateDirectory(OutDir);
 	}
 
-	static long EncodeAndGetSize(string pngName) {
+	static long EncodeAndGetSize(string pngName)
+	{
 		string pngPath = Path.Combine(DataDir, pngName);
 		string apfPath = Path.Combine(OutDir, Path.ChangeExtension(pngName, ".apf"));
 
@@ -25,43 +28,50 @@ public class FileSizeTests {
 	// v1.0 baselines (rANS entropy coding + LZ77 + Paeth + sub-byte palette) + ~2 KB headroom.
 
 	[Fact]
-	public void CircularImage_BelowSizeLimit() {
+	public void CircularImage_BelowSizeLimit()
+	{
 		long size = EncodeAndGetSize("circular_image.png");
 		Assert.True(size <= 16_000,
 			$"circular_image.apf is {size} bytes, expected <= 16000");
 	}
 
 	[Fact]
-	public void Cow_BelowSizeLimit() {
+	public void Cow_BelowSizeLimit()
+	{
 		long size = EncodeAndGetSize("cow.png");
 		Assert.True(size <= 443_000,
 			$"cow.apf is {size} bytes, expected <= 443000");
 	}
 
 	[Fact]
-	public void RotatedCow_BelowSizeLimit() {
+	public void RotatedCow_BelowSizeLimit()
+	{
 		long size = EncodeAndGetSize("rotated_cow.png");
 		Assert.True(size <= 206_000,
 			$"rotated_cow.apf is {size} bytes, expected <= 206000");
 	}
 
 	[Fact]
-	public void Sample_BelowSizeLimit() {
+	public void Sample_BelowSizeLimit()
+	{
 		long size = EncodeAndGetSize("sample.png");
 		Assert.True(size <= 23_000,
 			$"sample.apf is {size} bytes, expected <= 23000");
 	}
 
 	[Fact]
-	public void Terminal_BelowSizeLimit() {
+	public void Terminal_BelowSizeLimit()
+	{
 		long size = EncodeAndGetSize("terminal.png");
 		Assert.True(size <= 38_000,
 			$"terminal.apf is {size} bytes, expected <= 38000");
 	}
 
 	[Fact]
-	public void AllImages_RoundTripLossless() {
-		foreach (string png in Directory.GetFiles(DataDir, "*.png")) {
+	public void AllImages_RoundTripLossless()
+	{
+		foreach (string png in Directory.GetFiles(DataDir, "*.png"))
+		{
 			string name = Path.GetFileNameWithoutExtension(png);
 
 			using Image img = Image.FromFile(png);

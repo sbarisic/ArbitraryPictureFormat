@@ -4,12 +4,16 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
-namespace ArbitraryPictureFormat {
-	class Program {
-		static int Main(string[] args) {
+namespace ArbitraryPictureFormat
+{
+	class Program
+	{
+		static int Main(string[] args)
+		{
 			Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-			if (args.Length == 0 || args[0] == "--help" || args[0] == "-h") {
+			if (args.Length == 0 || args[0] == "--help" || args[0] == "-h")
+			{
 				PrintUsage();
 				return args.Length == 0 ? 1 : 0;
 			}
@@ -20,7 +24,8 @@ namespace ArbitraryPictureFormat {
 			string output = null;
 			string layer = null;
 
-			for (int i = 0; i < args.Length; i++) {
+			for (int i = 0; i < args.Length; i++)
+			{
 				string a = args[i];
 				if (a == "--stencil" || a == "-s")
 					stencil = true;
@@ -30,23 +35,28 @@ namespace ArbitraryPictureFormat {
 					output = args[++i];
 				else if ((a == "--layer" || a == "-l") && i + 1 < args.Length)
 					layer = args[++i];
-				else if (a.StartsWith("-")) {
+				else if (a.StartsWith("-"))
+				{
 					Console.Error.WriteLine("Unknown option: {0}", a);
 					return 1;
-				} else if (input == null)
+				}
+				else if (input == null)
 					input = a;
-				else {
+				else
+				{
 					Console.Error.WriteLine("Unexpected argument: {0}", a);
 					return 1;
 				}
 			}
 
-			if (input == null) {
+			if (input == null)
+			{
 				Console.Error.WriteLine("Error: no input file specified");
 				return 1;
 			}
 
-			if (!File.Exists(input)) {
+			if (!File.Exists(input))
+			{
 				Console.Error.WriteLine("Error: file not found: {0}", input);
 				return 1;
 			}
@@ -55,20 +65,29 @@ namespace ArbitraryPictureFormat {
 			string dir = Path.GetDirectoryName(Path.GetFullPath(input));
 			string name = Path.GetFileNameWithoutExtension(input);
 
-			try {
-				if (ext == ".apf") {
-					if (info) {
+			try
+			{
+				if (ext == ".apf")
+				{
+					if (info)
+					{
 						PrintInfo(input);
-					} else {
+					}
+					else
+					{
 						output ??= Path.Combine(dir, name + ".png");
 						if (!DecodeApf(input, output, stencil, layer))
 							return 1;
 					}
-				} else {
+				}
+				else
+				{
 					output ??= Path.Combine(dir, name + ".apf");
 					EncodeApf(input, output);
 				}
-			} catch (Exception ex) {
+			}
+			catch (Exception ex)
+			{
 				Console.Error.WriteLine("Error: {0}", ex.Message);
 				return 1;
 			}
@@ -76,7 +95,8 @@ namespace ArbitraryPictureFormat {
 			return 0;
 		}
 
-		static void EncodeApf(string input, string output) {
+		static void EncodeApf(string input, string output)
+		{
 			Console.WriteLine("  {0}", input);
 			Image img = Image.FromFile(input);
 			ArbitraryPicture apf = new ArbitraryPicture(img);
@@ -89,7 +109,8 @@ namespace ArbitraryPictureFormat {
 			Console.WriteLine("→ {0}  ({1:N0} → {2:N0} bytes, {3:F2}×)", output, inSize, outSize, ratio);
 		}
 
-		static bool DecodeApf(string input, string output, bool stencil, string layer) {
+		static bool DecodeApf(string input, string output, bool stencil, string layer)
+		{
 			Console.WriteLine("  {0}", input);
 			ApfFile file = ApfFile.FromFile(input);
 
@@ -98,7 +119,8 @@ namespace ArbitraryPictureFormat {
 					string.Join(", ", file.Images.ConvertAll(i => string.IsNullOrEmpty(i.Name) ? "(unnamed)" : i.Name)));
 
 			ApfImage image = file.GetImage(layer);
-			if (image == null) {
+			if (image == null)
+			{
 				Console.Error.WriteLine("Error: no image found" + (layer != null ? $" with name '{layer}'" : ""));
 				return false;
 			}
@@ -110,7 +132,8 @@ namespace ArbitraryPictureFormat {
 				bmp.Save(output, ImageFormat.Png);
 			Console.WriteLine("→ {0}", output);
 
-			if (stencil) {
+			if (stencil)
+			{
 				string stencilPath = Path.Combine(
 					Path.GetDirectoryName(output),
 					Path.GetFileNameWithoutExtension(output) + "_stencil.png");
@@ -122,14 +145,16 @@ namespace ArbitraryPictureFormat {
 			return true;
 		}
 
-		static void PrintInfo(string input) {
+		static void PrintInfo(string input)
+		{
 			ApfFile file = ApfFile.FromFile(input);
 			long fileSize = new FileInfo(input).Length;
 
 			byte version;
 			using (var fs = File.OpenRead(input))
 				version = (byte)fs.ReadByte();
-			string verStr = version switch {
+			string verStr = version switch
+			{
 				0x10 => "1.0",
 				0x11 => "1.1",
 				0x20 => "2.0",
@@ -142,7 +167,8 @@ namespace ArbitraryPictureFormat {
 			Console.WriteLine("  Images:  {0}", file.Images.Count);
 			Console.WriteLine();
 
-			for (int i = 0; i < file.Images.Count; i++) {
+			for (int i = 0; i < file.Images.Count; i++)
+			{
 				ApfImage img = file.Images[i];
 				string name = string.IsNullOrEmpty(img.Name) ? "(unnamed)" : img.Name;
 				var desc = img.Picture.Descriptor;
@@ -155,7 +181,8 @@ namespace ArbitraryPictureFormat {
 				Console.WriteLine("      Background: #{0:X2}{1:X2}{2:X2}{3:X2}",
 					bg.A, bg.R, bg.G, bg.B);
 
-				if (img.HasMetadata && img.Metadata.Count > 0) {
+				if (img.HasMetadata && img.Metadata.Count > 0)
+				{
 					Console.WriteLine("      Metadata:");
 					foreach (var kvp in img.Metadata)
 						Console.WriteLine("        {0} = {1}", kvp.Key, kvp.Value);
@@ -164,7 +191,8 @@ namespace ArbitraryPictureFormat {
 			}
 		}
 
-		static void PrintUsage() {
+		static void PrintUsage()
+		{
 			Console.WriteLine("apf - Arbitrary Picture Format converter");
 			Console.WriteLine();
 			Console.WriteLine("Usage:");

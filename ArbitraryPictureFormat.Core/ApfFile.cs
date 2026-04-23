@@ -145,49 +145,49 @@ namespace ArbitraryPictureFormat
 				switch (version)
 				{
 					case VERSION_1_0:
-					{
-						var pic = new ArbitraryPicture(new ShapeDesc(0, 0), System.Drawing.Color.Transparent);
-						pic.DeserializePayload(Reader);
-						file.Images.Add(new ApfImage(pic));
-						break;
-					}
-
-					case VERSION_1_1:
-					{
-						var metadata = ReadMetadata(Reader);
-						var pic = new ArbitraryPicture(new ShapeDesc(0, 0), System.Drawing.Color.Transparent);
-						pic.DeserializePayload(Reader);
-						file.Images.Add(new ApfImage(pic, "", metadata));
-						break;
-					}
-
-					case VERSION_2_0:
-					{
-						int imageCount = Reader.ReadInt32();
-						ApfReadHelpers.ValidateCount(imageCount, "image", ApfReadHelpers.MaxImages);
-						if (imageCount == 0)
-							throw new InvalidDataException("APF file contains no images.");
-						for (int i = 0; i < imageCount; i++)
 						{
-							int nameLen = Reader.ReadInt32();
-							string name = nameLen > 0
-								? ApfReadHelpers.ReadUtf8String(Reader, nameLen, "image name")
-								: "";
-
-							byte subVersion = Reader.ReadByte();
-							Dictionary<string, string> metadata = null;
-
-							if (subVersion == VERSION_1_1)
-								metadata = ReadMetadata(Reader);
-							else if (subVersion != VERSION_1_0)
-								throw new InvalidDataException("Unknown sub-image version: 0x" + subVersion.ToString("X2"));
-
 							var pic = new ArbitraryPicture(new ShapeDesc(0, 0), System.Drawing.Color.Transparent);
 							pic.DeserializePayload(Reader);
-							file.Images.Add(new ApfImage(pic, name, metadata));
+							file.Images.Add(new ApfImage(pic));
+							break;
 						}
-						break;
-					}
+
+					case VERSION_1_1:
+						{
+							var metadata = ReadMetadata(Reader);
+							var pic = new ArbitraryPicture(new ShapeDesc(0, 0), System.Drawing.Color.Transparent);
+							pic.DeserializePayload(Reader);
+							file.Images.Add(new ApfImage(pic, "", metadata));
+							break;
+						}
+
+					case VERSION_2_0:
+						{
+							int imageCount = Reader.ReadInt32();
+							ApfReadHelpers.ValidateCount(imageCount, "image", ApfReadHelpers.MaxImages);
+							if (imageCount == 0)
+								throw new InvalidDataException("APF file contains no images.");
+							for (int i = 0; i < imageCount; i++)
+							{
+								int nameLen = Reader.ReadInt32();
+								string name = nameLen > 0
+									? ApfReadHelpers.ReadUtf8String(Reader, nameLen, "image name")
+									: "";
+
+								byte subVersion = Reader.ReadByte();
+								Dictionary<string, string> metadata = null;
+
+								if (subVersion == VERSION_1_1)
+									metadata = ReadMetadata(Reader);
+								else if (subVersion != VERSION_1_0)
+									throw new InvalidDataException("Unknown sub-image version: 0x" + subVersion.ToString("X2"));
+
+								var pic = new ArbitraryPicture(new ShapeDesc(0, 0), System.Drawing.Color.Transparent);
+								pic.DeserializePayload(Reader);
+								file.Images.Add(new ApfImage(pic, name, metadata));
+							}
+							break;
+						}
 
 					default:
 						throw new InvalidDataException("Unknown APF format version: 0x" + version.ToString("X2"));
